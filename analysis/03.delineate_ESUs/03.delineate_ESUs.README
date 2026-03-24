@@ -1,0 +1,210 @@
+03. Delineate ESUs
+Overview
+
+This directory contains code and outputs for delineating Evolutionarily Significant Units (ESUs) in Bank Swallow using population genomic structure and admixture analyses.
+
+This workflow includes:
+
+Population structure analysis (PCA + admixture)
+Assignment of individuals to ESUs
+Creation of genoscape surfaces
+Delineation of ESU polygons
+Visualization of ESUs across multiple grouping schemes
+
+The outputs from this directory define ESUs used in downstream analyses of population trends, environmental drivers, and genomic offset.
+
+Directory Structure
+03.delineate_ESUs/
+├── code/
+├── scratch/
+├── figures/
+└── outputs/
+code/
+
+Scripts and RMarkdown workflows used to delineate ESUs.
+
+Main Workflows
+
+03.a.initial_popstructure.Rmd
+
+Runs PCA
+Evaluates population structure
+Identifies major genetic clusters
+
+03.b.grouping_scheme_outputs.Rmd
+
+Defines ESU grouping schemes
+Generates G4, G5, GM5, GM6 groupings
+Produces assignment tables
+Supporting Scripts
+
+prep_genoscape_inputs.R
+Prepares data for genoscape construction
+
+build_genoscape_surfaces.R
+Creates spatial genoscape surfaces from admixture outputs
+
+make_admix_barplot_and_assignments.R
+Creates admixture plots and assigns individuals to ESUs
+
+plot_pca_admix_solid.R
+Visualization of PCA + admixture results
+
+plot_pca_location_gradient.R
+Plots PCA results along geographic gradients
+
+scratch/
+
+Intermediate files and working data used to construct ESUs.
+
+PCA Outputs
+scratch/PCA/
+
+Includes:
+
+eigenvectors
+eigenvalues
+PCA input data
+Admixture / pcadmix Outputs
+scratch/pcadmix_output/
+
+Includes:
+
+Multiple K values
+Multiple alpha values
+Replicate runs
+
+Used to:
+
+Evaluate clustering results
+Generate ESU grouping schemes
+Admixture Group Assignments
+scratch/admix_output/
+
+Includes grouping assignments:
+
+BANS_admix_grouping_G4.tsv
+BANS_admix_grouping_G5.tsv
+BANS_admix_grouping_GM5.tsv
+BANS_admix_grouping_GM6.tsv
+Genoscape Rasters
+scratch/genoscape_output/
+
+Outputs include:
+
+G4 genoscape
+G5 genoscape
+GM5 genoscape
+GM6 genoscape
+
+These rasters are later converted into ESU polygons.
+
+figures/
+
+Visualization outputs for ESU delineation.
+
+PCA Plots
+figures/pca_plots/
+
+Examples:
+
+Overall PCA
+ESU-colored PCA
+Regional PCA
+Admixture Plots
+figures/admix_plots/
+
+Includes:
+
+G4 admixture
+G5 admixture
+GM5 admixture
+GM6 admixture
+Genoscape Plots
+figures/genoscape_plots/
+
+Maps showing spatial ESU assignment across North America.
+
+Color Files
+figures/colors/
+
+Contains:
+
+ESU color schemes
+cluster color palettes
+background color palettes
+
+These ensure consistent coloring across analyses.
+
+outputs/
+
+Final ESU polygon shapefiles used in downstream analyses.
+
+Example outputs:
+
+BANS_CU_polygons_thresh45_G4.shp
+BANS_CU_polygons_thresh45_G5.shp
+BANS_CU_polygons_thresh45_GM5.shp
+BANS_CU_polygons_thresh45_GM6.shp
+
+These shapefiles define ESUs used in:
+
+ESU-level GAM analyses
+Genomic offset analyses
+Spatial trend analyses
+ESU Grouping Schemes
+
+This directory produces four ESU delineation schemes:
+
+Scheme	Description
+G4	Genetics-only, 4 ESUs
+G5	Genetics-only, 5 ESUs
+GM5	Genetics + migration, 5 ESUs
+GM6	Genetics + migration, 6 ESUs
+
+These alternative schemes allow evaluation of how ESU delineation influences:
+
+Trend interpretation
+Environmental drivers
+Conservation prioritization
+Workflow Summary
+PCA + Admixture
+        ↓
+Assign individuals to clusters
+        ↓
+Create genoscape surfaces
+        ↓
+Threshold surfaces
+        ↓
+Generate ESU polygons
+        ↓
+Export shapefiles
+Output of This Step
+
+This directory produces:
+
+ESU assignments
+Genoscape rasters
+ESU polygons
+Figures for manuscript
+
+These outputs feed into downstream analyses, including:
+
+Range-trend analysis
+Environmental driver modeling
+Genomic offset analyses
+Reproducibility
+
+Main dependencies:
+
+R
+tidyverse
+pophelper
+terra
+raster
+sf
+ggplot2
+Notes
+scratch/ contains reproducible intermediate files
+Large files are not intended for GitHub
+Final outputs are stored in outputs/
