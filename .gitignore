@@ -22,8 +22,8 @@ analysis/04.predictors_of_decline/scratch/spatial_predictors
 analysis/04.predictors_of_decline/outputs/GAM_outputs/function_out
 
 #05.genomic_offset
-analysis/genomic_offset/scratch/RDA_output/
-analysis/genomic_offset/scratch/spatial_files
+analysis/05.genomic_offset/scratch/RDA_output
+analysis/05.genomic_offset/scratch/spatial_files
 
 #06.final_figures
 analysis/06.final_figures/figures_output/*predictions
