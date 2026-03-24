@@ -1,0 +1,295 @@
+---
+title: "04.a.spatial_predictors"
+output: html_document
+---
+
+This is going to wrangling the spatial data I want to include in my GAMM model for predicting decline in Bank Swallow.
+# Libraries
+```{r, message=FALSE, warning=FALSE}
+library(ncdf4)
+library(terra)
+library(raster)
+library(dplyr)
+library(purrr)
+library(data.table)
+library(ebirdst)
+library(fields)
+library(rnaturalearth)
+library(sf)
+```
+
+# INTRODUCTION
+This is the spatial layer wrangling for the spatial GAM modeling. Inputs are the raw spatial files from TerraClim, eBird, and the CU polygons output from 03.b.grouping_scheme_outputs.Rmd
+
+# PREP
+## Climate Data
+### example delta between 2012 and 2022
+```{r}
+ncfile <- "../scratch/spatial_predictors/TerraClimate/TerraClimate_tmax_2012.nc"
+r <- rast(ncfile)
+r2012 <- r[[6]]
+
+ncfile <- "../scratch/spatial_predictors/TerraClimate/TerraClimate_tmax_2022.nc"
+r <- rast(ncfile)
+r2022 <- r[[6]]
+
+delta <- r2022 - r2012
+
+na_bbox <- ext(-170, -50, 5, 85)
+delta_na <- crop(delta, na_bbox)
+
+writeRaster(delta_na, "../scratch/spatial_predictors/tmean_2022_minus_2012_NA.tif", overwrite = TRUE)
+
+plot(delta_na, main = "Mean annual T (2022) − Mean annual T (2012) (°C)")
+```
+
+### Loop for all variables
+```{r}
+file_paths12 <- list.files(
+  path = "../scratch/spatial_predictors/TerraClimate",
+  pattern = "2012\\.nc$",
+  full.names = TRUE
+)
+file_paths22 <- list.files(
+  path = "scratch/TerraClimate",
+  pattern = "2022\\.nc$",
+  full.names = TRUE
+)
+
+layer_names.ny <- basename(file_paths12) |>
+  sub("^TerraClimate_", "", x = _) |>
+  sub("_2012\\.nc$", "", x = _) |>
+  unique()
+
+climate12 <- lapply(file_paths12, rast)
+climate22 <- lapply(file_paths22, rast)
+names(climate) <- layer_names
+
+for (i in 1:5) {
+  r2012_june <- climate12[[i]][[6]]
+  r2022_june <- climate22[[i]][[6]]
+  
+  delta <- r2022_june - r2012_june
+  
+  na_bbox <- ext(-170, -50, 5, 85)
+  delta_na <- crop(delta, na_bbox)
+  
+  writeRaster(
+    delta_na,
+    paste0("../scratch/spatial_predictors/delta_climate/", layer_names.ny[[i]], "_june_delta.tif"),
+    overwrite = TRUE
+  )
+}
+
+test <- rast("../scratch/spatial_predictors/delta_climate/ws_june_delta.tif")
+test
+```
+
+## eBIRD Trends
+```{r}
+## BANS decline: eBird trends
+
+set_ebirdst_access_key("srtemkuj2h9h", overwrite = TRUE)
+ebirdst_download_trends(species = "banswa")
+
+trends_bans <- load_trends("banswa")
+
+trends_sf <- st_as_sf(
+  trends_bans,
+  coords = c("longitude", "latitude"),
+  crs = 4326
+)
+
+plot(trends_sf)
+
+trends_circles <- vectorize_trends(
+  trends_bans,
+  crs = "+proj=eqearth +lon_0=-96"
+)
+
+max_trend <- ceiling(max(abs(trends_circles$abd_trend)))
+legend_breaks <- seq(0, 40, by = 10)
+legend_breaks[length(legend_breaks)] <- max_trend
+legend_breaks <- c(-rev(legend_breaks), legend_breaks) |> unique()
+legend_labels <- c("<=-40", -20, 0, 20, ">=40")
+legend_colors <- ebirdst_palettes(length(legend_breaks) - 1, type = "trends")
+
+# assign colors to circles
+trends_circles <- trends_circles |> 
+  mutate(
+    color = cut(abd_trend, legend_breaks, labels = legend_colors) |>
+      as.character()
+  )
+
+countries <- ne_countries(returnclass = "sf", continent = "North America") |> 
+  st_geometry() |> 
+  st_transform(st_crs(trends_circles))
+
+states <- ne_states(iso_a2 = c("US", "CA", "MX")) |> 
+  st_geometry() |> 
+  st_transform(st_crs(trends_circles))
+
+# plot
+plot(st_geometry(trends_circles), border = NA, col = NA)
+plot(countries, col = "#cfcfcf", border = "#888888", add = TRUE)
+plot(st_geometry(trends_circles),
+     col = trends_circles$color, border = NA,
+     axes = FALSE, bty = "n", reset = FALSE, add = TRUE)
+lines(vect(countries), col = "#ffffff", lwd = 3)
+lines(vect(states), col = "#ffffff", lwd = 1.5, xpd = TRUE)
+
+label_breaks <- seq(0, 1, length.out = length(legend_breaks))
+image.plot(zlim = c(0, 1), breaks = label_breaks, col = legend_colors,
+           smallplot = c(0.90, 0.93, 0.15, 0.85),
+           legend.only = TRUE,
+           axis.args = list(at = c(0, 0.25, 0.5, 0.75, 1), 
+                            labels = legend_labels,
+                            col.axis = "black", fg = NA,
+                            cex.axis = 0.7, lwd.ticks = 0,
+                            line = -0.75),
+           legend.args = list(text = "Abundance Trend [% change]",
+                              side = 2, line = 0.25))
+
+trends_raster <- rasterize_trends(trends_bans, layers = "abd_trend")
+trends_raster.proj <- project(trends_raster, "EPSG:4326")
+writeRaster(trends_raster.proj, "../scratch/spatial_predictors/eBird_trends_BANS_proj4326.tif")
+plot(trends_raster.proj)
+
+trends_polys <- terra::as.polygons(trends_raster.proj, dissolve = FALSE)
+
+trends.values <- terra::extract(trends_raster.proj, trends_polys, fun = mean)
+write_csv(trends.values, "../scratch/spatial_predictors/BANS_abd_trends_values_per_cell.csv")
+```
+
+### Climate Trend per Trend Cell
+```{r}
+## Delta climate per trend cell
+
+file_paths <- list.files(
+  path = "../scratch/spatial_predictors/delta_climate",
+  pattern = "\\.tif$",
+  full.names = TRUE
+)
+
+delta_clim <- lapply(file_paths, rast)
+
+layer_names <- basename(file_paths) |>
+  sub("\\.tif$", "", x = _)
+
+for (i in 1:5) {
+  delta <- delta_clim[[i]]
+  delta_trend <- terra::extract(delta, trends_polys, fun = mean)
+  colnames(delta_trend) <- c("ID", layer_names[i])
+  write.csv(
+    delta_trend,
+    paste0("../scratch/spatial_predictors/delta_climate/", layer_names[i], ".csv"),
+    row.names = FALSE
+  )
+}
+```
+
+```{r}
+delta_files <- list.files(
+  path = "../scratch/spatial_predictors/delta_climate",
+  pattern = "_june_delta\\.csv$",
+  full.names = TRUE
+)
+
+delta_list <- lapply(delta_files, read.csv)
+
+delta_list <- lapply(delta_list, \(df) df %>% dplyr::select(-matches("^X$")))
+
+delta_all <- reduce(delta_list, left_join, by = "ID")
+write_csv(delta_all, "../scratch/spatial_predictors/delta_all_june_climate.csv")
+```
+## Data join
+```{r}
+delta_all <- read.csv("../scratch/spatial_predictors/delta_all_june_climate.csv")
+trends.values <- read.csv("../scratch/spatial_predictors/BANS_abd_trends_values_per_cell.csv")
+
+delta_abundance <- delta_all %>%
+  left_join(trends.values, by = "ID")
+
+trends.cen <- terra::centroids(trends_polys)
+trends.xy <- crds(trends.cen)
+
+sp.data.xy <- cbind(delta_abundance, trends.xy)
+
+write_csv(sp.data.xy, "../scratch/spatial_predictors/delta_climate_BANS_abd_trend_xy.csv")
+```
+# RUNNING THROUGH
+
+## trend data
+```{r}
+trends_raster.proj <- rast("../scratch/spatial_predictors/eBird_trends_BANS_proj4326.tif")
+trends.df <- as.data.frame(trends_raster.proj, xy = TRUE)
+
+plot(trends_raster.proj)
+```
+# Genoscape/ESU assignment
+(Note, the following function were generated using ChatGPT based on the above written out code that I produced, interpretation of results in my own)
+```{r}
+## Splitting data up per ESU, this is a shape file with all four clusters
+source("rasterize_genoscape_polygons.R")f
+genoscape_out <- rasterize_genoscape_polygons(
+  genoscape_file = "../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_GM6.shp",
+  out_tif = "../scratch/genoscape_stars/genoscape_stars_rast_CU_GM6_threshold45.tif"
+)
+
+genoscape_rast <- genoscape_out$genoscape_rast
+genoscape_terra <- terra::rast(genoscape_rast)
+
+genoscape_rast <- genoscape_out$genoscape_rast
+genoscape_terra <- terra::rast(genoscape_rast)
+
+# inspect values actually stored in the raster
+vals <- sort(unique(na.omit(terra::values(genoscape_terra)[, 1])))
+
+# make one binary layer per ESU value
+esu_layers <- lapply(vals, function(v) {
+  x <- genoscape_terra[[1]]
+  x <- ifel(x == v, 1, NA)
+  x
+})
+
+ESU_stack <- rast(esu_layers)
+names(ESU_stack) <- paste0("ESU", vals)
+
+ESU_stack
+plot(ESU_stack)
+
+q_by_trend <- terra::extract(
+  ESU_stack,
+  trends_polys,
+  fun = mean,
+  na.rm = TRUE
+)
+
+q_by_trend[is.nan(as.matrix(q_by_trend))] <- NA
+
+q_cols <- names(q_by_trend)[names(q_by_trend) != "ID"]
+
+ESU_by_trend <- q_by_trend %>%
+  rowwise() %>%
+  mutate(
+    ESU = {
+      hit <- q_cols[!is.na(c_across(all_of(q_cols)))]
+      if (length(hit) == 0) NA_character_ else hit[1]
+    }
+  ) %>%
+  ungroup()
+
+unique(ESU_by_trend$ESU)
+```
+
+## ESU to data join
+```{r}
+sp.data.xy <- read.csv("../scratch/spatial_predictors/delta_climate_BANS_abd_trend_xy.csv")
+
+sp.data <- left_join(sp.data.xy, ESU_by_trend[c("ID", "ESU")], by = "ID")
+
+sp.data.clean <- sp.data %>% tidyr::drop_na()
+
+sp.data.clean %>%
+  write.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM6_threshold45.csv", row.names = FALSE)
+```

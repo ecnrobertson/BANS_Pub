@@ -1,0 +1,869 @@
+---
+title: "04.b.ESU_spatial_modeling"
+output: html_doESUment
+---
+
+```{r, message=F}
+library(ggplot2)
+library(tidyverse)
+library(terra)
+library(mgcv)
+library(gratia)
+library(glmnet)
+library(broom)
+library(GGally)
+library(sf)
+library(tibble)
+```
+# Introduction
+Here we're exploring how the inclusion of evolutionary information, in the form of ESU grouping, improves our modeling. There's a couple steps here:
+1. explore the data to generally look at if trends seems to vary across ESUs
+2. try and figure out what the best predictors are, aka what should we include in the model
+3. test different hierarchical GAM models
+
+Note here that one of the ESUs doesn't have trend data available for it (location F). So it cannot be included in any of the following versions of the analysis.
+
+# G4
+## Initial Data visualization
+Just doing one of the variables for these, tmax, which I think will be important.
+```{r}
+data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_G4_threshold45.csv")
+
+#only data where I had a good ESU assignment
+clean.data <- data %>% filter(!is.na(ESU))
+nrow(clean.data)
+
+clean.data$ESU <- factor(clean.data$ESU)
+
+table(clean.data$ESU)
+genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_ESU_polygons_thresh45_G4.shp")
+ggplot() +
+  ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
+  theme_void() + 
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)  # expand = FALSE means put the axes right at the xlim and ylim
+ggsave("../figures/BANS_ESU_G4_polygons_reference.png")
+```
+Here ESU4 is the small one, get's dropped.
+
+
+Trend per ESU?
+```{r}
+ggplot(clean.data, aes(x = ESU, y = abd_trend)) +
+  geom_violin(trim = FALSE, fill = "gray90") +
+  geom_boxplot(width = 0.1, outlier.shape = NA) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_classic()
+ggsave("../figures/data_vis/ESU_G4_trend_by_ESU_violin.png")
+```
+
+Relationship with climate?
+```{r}
+ggplot(
+  clean.data %>% filter(ESU %in% c("ESU1","ESU2","ESU3")),
+  aes(x = tmax_june_delta, y = abd_trend)
+) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE) +
+  facet_wrap(~ ESU) +
+  theme_classic()
+ggsave("../figures/data_vis/ESU_G4_trend_by_temp_linear.png")
+
+ggplot(
+  data = data %>% filter(ESU %in% c("ESU1","ESU2","ESU3")),
+  aes(x = tmax_june_delta, y = abd_trend)
+) +
+  geom_point() +
+  geom_smooth(se = TRUE) +
+  facet_wrap(~ ESU)+
+  theme
+ggsave("../figures/data_vis/ESU_G4_trend_by_temp_wiggly.png")
+```
+
+Differences in slope of line aka sensitivity?
+```{r}
+slopes <- clean.data %>%
+  group_by(ESU) %>%
+  do(tidy(lm(abd_trend ~ tmax_june_delta, data = .))) %>%
+  filter(term == "tmax_june_delta")
+
+ggplot(slopes, aes(x = ESU, y = estimate)) +
+  geom_point(size = 3) +
+  geom_errorbar(
+    aes(ymin = estimate - std.error,
+        ymax = estimate + std.error),
+    width = 0.2
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_classic() +
+  ylab("Climate sensitivity (slope)")
+
+ggsave("../figures/data_vis/ESU_G4_slope_by_ESU.png")
+```
+
+Overlap in Climate Variables?
+```{r}
+clim_vars <- names(clean.data[,2:6])
+
+clim_long <- clean.data %>%
+  dplyr::select(ESU, all_of(clim_vars)) %>%
+  pivot_longer(cols = all_of(clim_vars), names_to = "var", values_to = "value") %>%
+  filter(!is.na(value))
+
+p <- ggplot(clim_long, aes(x = value, fill = factor(ESU), alpha=.25)) +
+  geom_density(linewidth = .2) +
+  facet_wrap(~ var, scales = "free", ncol = 2)+
+  theme_classic()
+
+p
+ggsave("../figures/data_vis/ESU_G4_climate_overlap.png")
+```
+
+Which variables matter most for each ESU?
+```{r}
+effects.df <- clean.data %>%
+  group_by(ESU) %>%
+  do(tidy(lm(abd_trend ~ ppt_june_delta + soil_june_delta + tmax_june_delta + tmin_june_delta + ws_june_delta,
+             data = .))) %>%
+  filter(term != "(Intercept)")
+
+ggplot(data=effects.df, aes(x = term, y = ESU, fill = estimate)) +
+  geom_tile() +
+  scale_fill_gradient2(midpoint = 0) +
+  theme_classic() +
+  xlab("Predictor") +
+  ylab("Adaptive Unit")
+
+ggsave("../figures/data_vis/ESU_G4_variable_importance.png")
+```
+
+```{r}
+ggplot(clean.data, aes(x = x, y = y, color = abd_trend)) +
+  geom_point(size = 0.6) +
+  facet_wrap(~ ESU) +
+  scale_color_gradient2(midpoint = 0) +
+  coord_equal() +
+  theme_void()
+ggsave("../figures/data_vis/ESU_G4_trend_over_space.png")
+```
+
+## Modeling
+Following recommendations from Pederson et al 2019 "Hierarchical generalized additive models in ecology: an introduction with mgcv". The idea here is to use a HGAM and see if including per group (ESU) smoothing parameters improves the model over using a universal smoothing function.
+
+So, the paper lays out the three questions I need to address:
+1. Should each group have its own smoother, or will a common smoother suffice?
+So, this is the big questions. I'm going to do two versions, one with a common (global) smoother and another where each group has its own smoother.
+2. Do all of the group-specific smoothers have the same wiggliness, or should each group have its own smoothing parameter?
+I think they should each have their own smoothing parameter... wiggliness..
+3. Will the smoothers for each group have a similar shape to one another—a shared global smoother?
+For simplicity, I think they'll have a similar shape.
+
+The main question is does including adaptive units improve the models for predicting abundance trend. The idea is that if they are adaptively different they should respond to the environmental changes differently. So, allowing for unique within group relationships versus forcing a global relationship should make the model better.
+
+Then, I also want to try and use the best model to predict abundance trend within adaptive unit (assuming that ESU is in the better model).
+
+So, this all leaves me with a couple models to test:
+1. A single common smoother for all observations; We will refer to this as model G, as it only has a Global smoother.  
+2. A global smoother plus group-level smoothers that have the same wiggliness. We will refer to this as model GS (for Global smoother with individual effects that have a Shared penalty).  
+3. A global smoother plus group-level smoothers with differing wiggliness. We will refer to this as model GI (for Global smoother with individual effects that have Individual penalties).  
+4. Group-specific smoothers without a global smoother, but with all smoothers having the same wiggliness. We will refer to this as model S. 5. Group-specific smoothers with different wiggliness. We will refer to this as model I.
+
+We're not going to work with option 5 here, model I, as it's a little problematic and not likely to be helpful for my main questions. So, to summarize the plan:
+
+Model	        	Purpose
+gam_null2	    	Pure environment
+modG          	ESU mean effects
+modGS.<var>	    Primary ESU interaction test
+modS.<var>      No global curve, just ESU interaction
+
+### Null Model
+This is going to be similar to the above but with some specific tweaks to get the best possible fit. This will be the null model as it's the adb trend just by the environment with no ESU information incorporated.
+
+I'm going to fiddle with the k values for each term so that's solid going forward. Here's my criteria (Wood, S. N., 2017):
+k-index ~ 1 and p-value not small (e.g., > 0.05): k is probably fine.
+k-index < ~0.9 and p-value small: k likely too low → increase k for that term.
+
+```{r}
+sel
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") + s(soil_june_delta, k = 15, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 15, bs="tp") + s(ws_june_delta, k = 15, bs="tp"), data=clean.data, method="REML")
+
+mgcv::gam.check(gam_null)
+```
+That's pretty good. So let's use this as our null.
+```{r}
+summary(gam_null)
+```
+All variables are highly significant, deviance explained is 42.9%.
+
+### G
+Alright, time to add in ESU.
+Pedersen 2019 example model:
+gam(log(uptake) ∼ s(log(conc), k=5, bs="tp") +  s(Plant_uo, k=12, bs="re"),  data=CO2, method="REML")
+```{r}
+modG <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") + s(soil_june_delta, k = 15, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 15, bs="tp") + s(ws_june_delta, k = 15, bs="tp") + s(ESU, k=2, bs = "re"), data = clean.data, method="REML")
+
+mgcv::gam.check(modG)
+
+summary(modG)
+```
+Okay, so this is looking like a pretty good model! 45.7% deviance explained is really good, and all of the terms are significant.
+
+```{r}
+gratia::draw(modG)
+```
+
+```{r}
+ref_vals <- within(clean.data, {
+  ppt_ref  <- median(ppt_june_delta,  na.rm = TRUE)
+  soil_ref <- median(soil_june_delta, na.rm = TRUE)
+  tmin_ref <- median(tmin_june_delta, na.rm = TRUE)
+  ws_ref <- median(ws_june_delta, na.rm = TRUE)
+})
+
+pred_grid <- expand.grid(
+  tmax_june_delta = seq(
+    min(clean.data$tmax_june_delta, na.rm = TRUE),
+    max(clean.data$tmax_june_delta, na.rm = TRUE),
+    length.out = 100
+  ),
+  ESU = levels(clean.data$ESU)
+)
+
+# add held-constant covariates
+pred_grid$ppt_june_delta  <- median(clean.data$ppt_june_delta,  na.rm = TRUE)
+pred_grid$soil_june_delta <- median(clean.data$soil_june_delta, na.rm = TRUE)
+pred_grid$tmin_june_delta <- median(clean.data$tmin_june_delta, na.rm = TRUE)
+pred_grid$ws_june_delta <- median(clean.data$ws_june_delta, na.rm = TRUE)
+
+p1 <- predict(modG, newdata = pred_grid, se.fit = TRUE, type = "link")
+pred_grid$fit <- p1$fit
+pred_grid$se  <- p1$se.fit
+
+# predictions EXCLUDING the ESU random effect (population-level)
+p2 <- predict(
+  modG, newdata = pred_grid, se.fit = TRUE, type = "link",
+  exclude = "s(ESU)"
+)
+pred_grid$fit_pop <- p2$fit
+pred_grid$se_pop  <- p2$se.fit
+
+ggplot(pred_grid, aes(x = tmax_june_delta, y = fit, group = ESU, color = ESU)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = fit - 2*se, ymax = fit + 2*se, fill = ESU),
+              alpha = 0.15, colour = NA) +
+  theme_classic() +
+  guides(fill = "none") +
+  ylab("Predicted abd_trend")
+```
+### GS
+So this is wanting to have an interaction between environmental and ESU that allows ESU to have independent responses to the environment. This would become pretty complicated if I did it for each predictor in one model, so I'm going to break it into a separate interaction model for each variable and try and see which has the strongest per ESU affect...
+
+gam(log(uptake) ∼ s(log(conc), k=5, m=2) +  s(log(conc), Plant_uo, k=5, bs="fs", m=2),  data=CO2, method="REML")
+```{r, label="GS models"}
+modGS.ppt <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") +
+                   s(ppt_june_delta, ESU, k = 3, bs="fs") + # K value for this is the number of ESUs, so 3
+                   s(soil_june_delta, k = 15, bs="tp") +
+                   s(tmax_june_delta, k = 15, bs="tp") +
+                   s(tmin_june_delta, k = 15, bs="tp") +
+                   s(ws_june_delta, k = 15, bs="tp"), data = clean.data, method="REML")
+
+modGS.soil <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") +
+                    s(soil_june_delta, k = 15, bs="tp") +
+                    s(soil_june_delta, ESU, k = 3, bs="fs") +
+                    s(tmax_june_delta, k = 15, bs="tp") +
+                    s(tmin_june_delta, k = 15, bs="tp") +
+                    s(ws_june_delta, k = 15, bs="tp"), data = clean.data, method="REML")
+
+modGS.tmax <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") +
+                    s(soil_june_delta, k = 15, bs="tp") +
+                    s(tmax_june_delta, k = 15, bs="tp") +
+                    s(tmax_june_delta, ESU, k = 3, bs="fs") +
+                    s(tmin_june_delta, k = 15, bs="tp") +
+                    s(ws_june_delta, k = 15, bs="tp"), data = clean.data, method="REML")
+
+modGS.tmin <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") +
+                    s(soil_june_delta, k = 15, bs="tp") +
+                    s(tmax_june_delta, k = 15, bs="tp") +
+                    s(tmin_june_delta, k = 15, bs="tp") +
+                    s(tmin_june_delta, ESU, k = 3, bs="fs") +
+                    s(ws_june_delta, k = 15, bs="tp"), data = clean.data, method="REML")
+
+modGS.ws <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") +
+                    s(soil_june_delta, k = 15, bs="tp") +
+                    s(tmax_june_delta, k = 15, bs="tp") +
+                    s(tmin_june_delta, k = 15, bs="tp") +
+                    s(tmin_june_delta, k = 15, bs="tp") +
+                    s(ws_june_delta, ESU, k = 3, bs="fs"), data = clean.data, method="REML")
+```
+
+So, each model is testing a single hypothesis:
+modGS.ppt: Does the ppt–trend relationship vary by ESU?
+modGS.soil: Does the soil–trend relationship vary by ESU?
+modGS.tmax: Does the tmax–trend relationship vary by ESU?
+modGS.tmin: Does the tmin–trend relationship vary by ESU?
+
+We're going to check this out a couple ways: 1) does it improve the fit to include the interaction?, 2) How does the EDF change, 0 would be no ESU variation and 1 would be ESU-specific shape differences, 3) Visual inspection.
+
+I think we can compare each of these to the base modG to see if including the interaction improves model fit...
+```{r, label="modGS.ppt}
+anova(modG, modGS.ppt,  test="Chisq")
+summary(modGS.ppt)
+plot(modGS.ppt, pages=1, shade=TRUE)
+```
+So, allowing ESU to vary by ppt improves the model (sig Chi-Sq test), improves the deviance explained (up to 46.5%) while retaining all the variables, and it's pretty clear that all the ESUs are having different responses to ppt.
+
+```{r, label="modGS.soil"}
+anova(modG, modGS.soil, test="Chisq")
+summary(modGS.soil)
+plot(modGS.soil, pages=1, shade=TRUE)
+```
+Again, sig difference in model (and up to 46.2% R2). 
+
+```{r, label="modGS.tmax"}
+anova(modG, modGS.tmax, test="Chisq")
+summary(modGS.tmax)
+plot(modGS.tmax, pages=1, shade=TRUE)
+```
+Again, sig in model (and up to 52.1% R2).
+
+```{r, label="modGS.tmin"}
+anova(modG, modGS.tmin, test="Chisq")
+summary(modGS.tmin)
+plot(modGS.tmin, pages=1, shade=TRUE)
+```
+Again, sig dif in model (and up to 47.8% R2).
+
+So, I'm seeing that adding the ESU level interaction improves the models. This supports my hypotheses about the inclusion of biological information into the predictions of decline, which is cool. I'm also seeing that the ESUs are definitely varying, but in a somewhat consistent pattern? The way this plots you can't totally tell what color is what ESU (this would have to be plotted separately). The most significant improvement in R2 came from the interaction with tmax, so let's investigate that further.
+
+```{r, label="modGS.tmax digging"}
+library(ggplot2)
+
+ESUs <- levels(clean.data$ESU)
+ESU_cols <- setNames(
+  RColorBrewer::brewer.pal(length(ESUs), "Set1"),
+  ESUs
+)
+barplot(rep(1, length(ESU_cols)), col = ESU_cols, names.arg = names(ESU_cols), border = NA, ylab = "", main = "ESU color key")
+draw(modGS.tmax, select = "s(tmax_june_delta,ESU)") +
+  scale_colour_manual(values = ESU_cols)
+```
+ESU 1 (R) and ESU 2 (B) are showing a negative slopes and ESU 3 (G) is has a positive slope. The y-axis here is change in predicted trend attributable to tmax, relative to the model intercept and other predictors. So for +50, that menas that ESU-tmax combination increases predicted trend by ~50 units, and -25 would mean that ESU-tmax combination decreases predicted trend by ~25 units. For ESU1 and 2, as tmax increases, the contribution of temperature to trend becomes increasingly negative, ie. warming is associated with steeper declines (or weaker increases) in these ESUs. For ESU3, as tmax increases the contribution become positive and warming is associated with imrpvoed trends.
+
+*So, ESUs differ in both the direction and magnitude of their response to increasing June maximum temperature. In some ESUs (ESU1 and 2), warming is associated with declining trends, whereas in others (ESU3) it is associated with increasing trends.*
+
+### S
+Okay, so let's take away the global term for the given environmental variable and instead just include an interaction.
+
+gam(log(uptake) ∼ s(log(conc), Plant_uo, k=5, bs="fs", m=2),  data=CO2, method="REML")
+```{r}
+modS.temp <- gam(abd_trend ~ s(tmax_june_delta, ESU, m=2, k = 15, bs="fs"), data = clean.data, method="REML")
+```
+
+```{r, label="modGI.ppt"}
+modS.ppt <- gam(abd_trend ~ s(ppt_june_delta, ESU, m=2, k = 3, bs="fs") + # K value for this is the number of ESUs, so 3
+                   s(soil_june_delta, k = 15, bs="tp") +
+                   s(tmax_june_delta, k = 15, bs="tp") +
+                   s(tmin_june_delta, k = 15, bs="tp") + 
+                   s(ws_june_delta, k=15, bs="tp"), data = clean.data, method="REML")
+
+summary(modS.ppt)
+anova(modGS.ppt, modS.ppt,  test="Chisq")
+plot(modS.ppt, pages=1, shade=TRUE)
+```
+The models are significantly different. We lose R2 here compared to the GS. This makes sense since the global term was still significant in the GS model, so we're removing something that was successfully explaining some variance.
+
+```{r, label="modGI.soil"}
+modS.soil <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") +
+                    s(soil_june_delta, ESU, m=2, k = 3, bs="fs") +
+                    s(tmax_june_delta, k = 15, bs="tp") +
+                    s(tmin_june_delta, k = 15, bs="tp") + 
+                    s(ws_june_delta, k=15, bs="tp"), data = clean.data, method="REML")
+anova(modGS.soil, modS.soil, test="Chisq")
+summary(modS.soil)
+plot(modS.soil, pages=1, shade=TRUE)
+```
+Same, going from GS->S.
+
+Let's just assume that's true for the rest of them. So, so far I think the GS models are the best.
+
+Just making the rest for the summary tables:
+```{r}
+modS.tmax <- gam(abd_trend ~ s(ppt_june_delta, k=15, bs="tp") + # K value for this is the number of ESUs, so 3
+                   s(soil_june_delta, k = 15, bs="tp") +
+                   s(tmax_june_delta, ESU, m=2, k = 3, bs="fs") +
+                   s(tmin_june_delta, k = 15, bs="tp") + 
+                   s(ws_june_delta, k=15, bs="tp"), data = clean.data, method="REML")
+modS.tmin <- gam(abd_trend ~ s(ppt_june_delta, k=15, bs="tp") + # K value for this is the number of ESUs, so 3
+                   s(soil_june_delta, k = 15, bs="tp") +
+                   s(tmax_june_delta, k = 15, bs="tp") +
+                   s(tmin_june_delta, ESU, m=2, k = 3, bs="fs") + 
+                   s(ws_june_delta, k=15, bs="tp"), data = clean.data, method="REML")
+modS.ws <- gam(abd_trend ~ s(ppt_june_delta, k=15, bs="tp") + # K value for this is the number of ESUs, so 3
+                   s(soil_june_delta, k = 15, bs="tp") +
+                   s(tmax_june_delta, k = 15, bs="tp") +
+                   s(tmin_june_delta, k=15, bs="tp") + 
+                   s(ws_june_delta, ESU, m=2, k = 3, bs="fs"), data = clean.data, method="REML")
+```
+
+## Interpretations
+So, I'm going to use biology to interpret things. Two main questions:
+1. Does including ESU improve the models?
+2. What do the different ways of including ESU tell us about how the groups respond to environmental variables?
+
+So, this questions each model is trying to answer become:
+modG -> Do ESUs differ at all?
+modGS.<var> -> Do ESUs differ in response shape to this variable?
+modS.<var> -> Is there no shared global response?
+
+### results table values:
+```{r}
+models <- c("ppt", "soil", "tmax", "tmin", "ws")
+
+get_anova_row <- function(m0, m1, label) {
+  a <- anova(m0, m1, test = "Chisq")
+  data.frame(
+    Comparison = label,
+    Delta_EDF  = a$Df[2],
+    Delta_Dev  = a$Deviance[2],
+    p_value    = a$`Pr(>Chi)`[2],
+    stringsAsFactors = FALSE
+  )
+}
+
+get_r2 <- function(m) {
+  s <- summary(m)
+  c(
+    R2_adj = s$r.sq,
+    Dev_expl = s$dev.expl
+  )
+}
+
+  
+for (v in models) {
+
+  # construct model object names
+  mod_null <- gam_null2
+  mod_G    <- modG
+  mod_GS   <- get(paste0("modGS.", v))
+  mod_S    <- get(paste0("modS.", v))
+  
+  #R2 vals
+  r2_null <- get_r2(mod_null)
+  r2_G    <- get_r2(mod_G)
+  r2_GS   <- get_r2(mod_GS)
+  r2_S    <- get_r2(mod_S)
+
+  # build rESUlts table
+  res <- rbind(
+    data.frame(
+      Predictor = v,
+      Model = "Null",
+      Comparison = "Null (no ESU)",
+      Delta_EDF = NA,
+      Delta_Dev = NA,
+      p_value = NA,
+      R2_adj = r2_null["R2_adj"],
+      Dev_expl = r2_null["Dev_expl"]
+    ),
+    cbind(
+      data.frame(
+        Predictor = v,
+        Model = "modG",
+        stringsAsFactors = FALSE
+      ),
+      get_anova_row(mod_null, mod_G, "modG vs Null"),
+      t(r2_G)
+    ),
+    cbind(
+      data.frame(
+        Predictor = v,
+        Model = "modGS",
+        stringsAsFactors = FALSE
+      ),
+      get_anova_row(mod_G, mod_GS, paste0("modGS.", v, " vs modG")),
+      t(r2_GS)
+    ),
+    cbind(
+      data.frame(
+        Predictor = v,
+        Model = "modS",
+        stringsAsFactors = FALSE
+      ),
+      get_anova_row(mod_GS, mod_S, paste0("modS.", v, " vs modGS")),
+      t(r2_S)
+    )
+  )
+
+  # reorder columns
+  res <- res[, c(
+    "Predictor", "Model", "Comparison",
+    "Delta_EDF", "Delta_Dev", "p_value",
+    "R2_adj", "Dev_expl"
+  )]
+
+  # optional formatting
+  res$p_value <- ifelse(
+    is.na(res$p_value),
+    NA,
+    ifelse(res$p_value < 0.001, "<0.001", round(res$p_value, 3))
+  )
+
+  # write CSV
+  write.csv(
+    res,
+    file = file.path("../outputs/GAM_outputs/G4_runthrough", paste0("GAM_model_comparison_", v, "G4.csv")),
+    row.names = FALSE
+  )
+}
+```
+
+# FUNCTION RUNNING FOR INTERATIONS
+Base null model for everything:
+```{r}
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") + s(soil_june_delta, k = 15, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 15, bs="tp") + s(ws_june_delta, k = 15, bs="tp"), data=clean.data, method="REML")
+
+mgcv::gam.check(gam_null)
+```
+
+(Note, the following functions were generated using ChatGPT based on the above written out code that I produced, interpretation of results in my own)
+
+## G4
+### Initial Data visualization
+Just doing one of the variables for these, tmax, which I think will be important.s
+```{r}
+data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_G4_threshold45.csv")
+
+#only data where I had a good ESU assignment
+clean.data <- data %>% filter(!is.na(ESU))
+nrow(clean.data)
+
+clean.data$ESU <- factor(clean.data$ESU)
+
+table(clean.data$ESU)
+
+genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_G4.shp")
+ggplot() +
+  ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
+  theme_void() + 
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)
+ggsave("../figures/BANS_CU_G4_polygons_reference.png")
+```
+Drops ESU 2 (site F) because there's no trend data available there.
+
+Data vis function for plotting
+```{r}
+source("plot_esu_data_vis.R")
+
+esus <- as.character(unique(clean.data$ESU))
+
+vis_out <- plot_esu_data_vis(
+  clean.data = clean.data,
+  out_prefix = "CU_G4",
+  out_dir = "../figures/data_vis",
+  esus_for_climate = esus
+)
+```
+
+### running all the models
+So we can change the input vars, the k parameters for the variables (based on the null model parameterization), and the k value for the number of ESUs (increase it to 4 for four groups).
+```{r}
+source("GAM_modeling_and_summary.R")
+fit_esugams_and_summarize(
+  data_path = "../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_G4_threshold45.csv",
+  out_dir   = "../outputs/GAM_outputs/function_out",
+  run_name  = "G4",
+  focal_vars=c("ppt","soil", "tmax", "tmin", "ws"),
+  var_map = c(
+    ppt = "ppt_june_delta",
+    soil = "soil_june_delta",
+    tmax = "tmax_june_delta",
+    tmin="tmin_june_delta",
+    ws = "ws_june_delta"
+  ),
+  k_global = c(ppt=15, soil=15, tmax=15, tmin=15, ws=15),
+  k_fs = 3
+)
+```
+
+## G5
+### Initial Data visualization
+Just doing one of the variables for these, tmax, which I think will be important.s
+```{r}
+data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_G5_threshold45.csv")
+
+#only data where I had a good ESU assignment
+clean.data <- data %>% filter(!is.na(ESU))
+nrow(clean.data)
+
+clean.data$ESU <- factor(clean.data$ESU)
+
+table(clean.data$ESU)
+
+genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_G5.shp")
+ggplot() +
+  ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
+  theme_void() + 
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)
+ggsave("../figures/BANS_CU_G5_polygons_reference.png")
+```
+Drops ESU 2 (site F) because there's no trend data available there.
+
+Data vis function for plotting
+```{r}
+source("plot_esu_data_vis.R")
+
+esus <- as.character(unique(clean.data$ESU))
+
+vis_out <- plot_esu_data_vis(
+  clean.data = clean.data,
+  out_prefix = "CU_G5",
+  out_dir = "../figures/data_vis",
+  esus_for_climate = esus
+)
+```
+
+### running all the models
+So we can change the input vars, the k parameters for the variables (based on the null model parameterization), and the k value for the number of ESUs (increase it to 4 for four groups).
+```{r}
+source("GAM_modeling_and_summary.R")
+fit_esugams_and_summarize(
+  data_path = "../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_G5_threshold45.csv",
+  out_dir   = "../outputs/GAM_outputs/function_out",
+  run_name  = "G5",
+  focal_vars=c("ppt","soil", "tmax", "tmin", "ws"),
+  var_map = c(
+    ppt = "ppt_june_delta",
+    soil = "soil_june_delta",
+    tmax = "tmax_june_delta",
+    tmin="tmin_june_delta",
+    ws = "ws_june_delta"
+  ),
+  k_global = c(ppt=15, soil=15, tmax=15, tmin=15, ws=15),
+  k_fs = 3
+)
+```
+
+## GM5
+### Initial Data visualization
+Just doing one of the variables for these, tmax, which I think will be important.s
+```{r}
+data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM5_threshold45.csv")
+
+#only data where I had a good ESU assignment
+clean.data <- data %>% filter(!is.na(ESU))
+nrow(clean.data)
+
+clean.data$ESU <- factor(clean.data$ESU)
+
+table(clean.data$ESU)
+
+genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_GM5.shp")
+ggplot() +
+  ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
+  theme_void() + 
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)
+ggsave("../figures/BANS_CU_GM5_polygons_reference.png")
+```
+Drops ESU 2 (site F) because there's no trend data available there.
+
+Data vis function for plotting
+```{r}
+source("plot_esu_data_vis.R")
+
+esus <- as.character(unique(clean.data$ESU))
+
+vis_out <- plot_esu_data_vis(
+  clean.data = clean.data,
+  out_prefix = "CU_GM5",
+  out_dir = "../figures/data_vis",
+  esus_for_climate = esus
+)
+```
+
+### running all the models
+So we can change the input vars, the k parameters for the variables (based on the null model parameterization), and the k value for the number of ESUs (increase it to 4 for four groups).
+```{r}
+source("GAM_modeling_and_summary.R")
+fit_esugams_and_summarize(
+  data_path = "../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM5_threshold45.csv",
+  out_dir   = "../outputs/GAM_outputs/function_out",
+  run_name  = "GM5",
+  focal_vars=c("ppt","soil", "tmax", "tmin", "ws"),
+  var_map = c(
+    ppt = "ppt_june_delta",
+    soil = "soil_june_delta",
+    tmax = "tmax_june_delta",
+    tmin="tmin_june_delta",
+    ws = "ws_june_delta"
+  ),
+  k_global = c(ppt=15, soil=15, tmax=15, tmin=15, ws=15),
+  k_fs = 3
+)
+```
+
+## GM6
+### Initial Data visualization
+Just doing one of the variables for these, tmax, which I think will be important.s
+```{r}
+data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM6_threshold45.csv")
+
+#only data where I had a good ESU assignment
+clean.data <- data %>% filter(!is.na(ESU))
+nrow(clean.data)
+
+clean.data$ESU <- factor(clean.data$ESU)
+
+table(clean.data$ESU)
+
+genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_GM6.shp")
+ggplot() +
+  ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
+  theme_void() + 
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)
+ggsave("../figures/BANS_CU_GM6_polygons_reference.png")
+```
+Drops ESU 2 (site F) because there's no trend data available there.
+
+Data vis function for plotting
+```{r}
+source("plot_esu_data_vis.R")
+
+esus <- as.character(unique(clean.data$ESU))
+
+vis_out <- plot_esu_data_vis(
+  clean.data = clean.data,
+  out_prefix = "CU_GM6",
+  out_dir = "../figures/data_vis",
+  esus_for_climate = esus
+)
+```
+
+### running all the models
+So we can change the input vars, the k parameters for the variables (based on the null model parameterization), and the k value for the number of ESUs (increase it to 4 for four groups).
+```{r}
+source("GAM_modeling_and_summary.R")
+fit_esugams_and_summarize(
+  data_path = "../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM6_threshold45.csv",
+  out_dir   = "../outputs/GAM_outputs/function_out",
+  run_name  = "GM6",
+  focal_vars=c("ppt","soil", "tmax", "tmin", "ws"),
+  var_map = c(
+    ppt = "ppt_june_delta",
+    soil = "soil_june_delta",
+    tmax = "tmax_june_delta",
+    tmin="tmin_june_delta",
+    ws = "ws_june_delta"
+  ),
+  k_global = c(ppt=15, soil=15, tmax=15, tmin=15, ws=15),
+  k_fs = 3
+)
+```
+# COMPARING MODELS
+So Pedersen et al (2019) suggests that using AIC to compare across model types is problematic. But I think within a model type I could do a comparison, for example to see which variable is the best predictor. And I can also do comparisons across the different grouping schemes.
+
+I've got some helper function to do all these comparisons a little easier:
+(Note, the following functions were generated using ChatGPT with instructions for the comparisons I wanted to run, interpretation of results in my own)
+
+## Setup
+Model table with all the names and variables and grouping schemes... Need one for each model...
+```{r}
+source("build_model_tbl.R")
+
+model_tbl <- build_model_tbl(
+  base_dir = "../outputs/GAM_outputs/function_out"
+)
+
+dplyr::count(model_tbl, scheme, model_type, variable)
+```
+## get the AIC values for each model
+It takes a tibble of models and adds an AIC column by actually calculating AIC(model) for each fitted GAM.
+```{r}
+summarize_model_aic <- function(model_tbl) {
+
+  model_tbl %>%
+    mutate(
+      AIC = purrr::map_dbl(file, function(f) {
+        m <- readRDS(f)
+        out <- AIC(m)
+        rm(m)
+        gc()
+        out
+      })
+    )
+}
+
+aic_tbl <- summarize_model_aic(model_tbl)
+```
+
+## Within each grouping scheme and model structure, which variable is best?
+It groups by scheme and model_type and compares AIC values across the climate variables.
+```{r}
+compare_variables_within_scheme <- function(aic_tbl) {
+  aic_tbl %>%
+    dplyr::group_by(scheme, model_type) %>%
+    dplyr::mutate(
+      delta = AIC - min(AIC, na.rm = TRUE),
+      best = AIC == min(AIC, na.rm = TRUE)
+    ) %>%
+    dplyr::arrange(scheme, model_type, AIC) %>%
+    dplyr::ungroup()
+}
+```
+
+## Across grouping schemes, for each model type and varaible, which scheme is the best?
+Groups by model_type and varaible and compares AIC across scheme.
+```{r}
+compare_schemes_within_variable <- function(aic_tbl) {
+  aic_tbl %>%
+    dplyr::group_by(model_type, variable) %>%
+    dplyr::mutate(
+      delta = AIC - min(AIC, na.rm = TRUE),
+      best = AIC == min(AIC, na.rm = TRUE)
+    ) %>%
+    dplyr::arrange(model_type, variable, AIC) %>%
+    dplyr::ungroup()
+}
+```
+
+## Loop and Wrapper
+```{r}
+compare_aic_both_ways <- function(aic_tbl) {
+  list(
+    within_scheme = compare_variables_within_scheme(aic_tbl),
+    across_scheme = compare_schemes_within_variable(aic_tbl)
+  )
+}
+
+aic_results <- compare_aic_both_ways(aic_tbl)
+
+dir.create("../outputs/GAM_outputs/model_comparisons", recursive = TRUE, showWarnings = FALSE)
+
+write_csv(
+  aic_results$within_scheme,
+  "../outputs/GAM_outputs/model_comparisons/within_scheme.csv"
+)
+
+write_csv(
+  aic_results$across_scheme,
+  "../outputs/GAM_outputs/model_comparisons/across_scheme.csv"
+)
+```
