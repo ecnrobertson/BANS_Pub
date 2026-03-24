@@ -1,0 +1,1044 @@
+---
+title: "03.a.initial_popstructure"
+output: html_document
+---
+
+# Libraries
+```{r}
+library(tidyverse)
+library(data.table)
+library(dplyr)
+library(rnaturalearth)
+library(geosphere)
+library(ggplot2)
+library(rnaturalearth)
+library(raster)
+library(terra)
+```
+
+# Pruning
+```{bash}
+#GIVING SNP IDS
+vcf="/scratch/alpine/ericacnr@colostate.edu/BANS/02.imputation/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.imputed4.1.final.vcf.gz"
+
+conda activate GWAS2
+plink --vcf $vcf --aec --recode --out BANS.all.recode
+
+cat BANS.all.recode.map | awk -F"\t" '{split($1, a, "__"); print $1"\t"a[1]"."$4"\t"$3"\t"$4}' > BANS.all.recode_loc.map
+
+plink --ped BANS.all.recode.ped \
+--map BANS.all.recode_loc.map \
+--make-bed --aec \
+--out BANS.all.recode
+
+bfile="BANS.all.recode"
+
+plink --bfile $bfile --aec \
+--indep-pairwise 25 10 0.5 --out PC1_allindv
+#278091 of 3123808 variants removed.
+
+plink --bfile $bfile --aec --extract PC1_allindv.prune.in \
+  --make-bed --out pruned_allindv
+#2845717 variants and 209 people pass filters and QC.
+
+plink --bfile pruned_allindv --aec --allow-no-sex --pca 208 \
+  --out PC1_allindv.ld25-10-0.5
+#2845717 variants and 209 people pass filters and QC.
+```
+
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/02.5.neutral_pop_struc/PC1_allindv.ld25-10-0.5*eigen* /Users/ericarobertson/Desktop/BANS_adaptive_units/analysis/02.5.neutral_pop_struc/
+```
+# Time to plot the PCA.
+## grouping pops
+The actual group pops is missing indv that I filtered for missingness, so this is a quick temporary one...
+```{r}
+meta <- read.csv("../../../raw_data/BANS_all_sample_data_shifted.csv")
+coords <- meta %>% dplyr::select(Long, Lat)
+dist_matrix <- distm(as.matrix(coords), fun = distHaversine)
+
+libraries <- read.delim("../../01.fastq_processing/snakemake/config_files/BANS.Plate1.2.3.units.tsv") %>% rename(BGP_ID=sample)
+
+lib.meta <- left_join(meta, libraries %>% dplyr::select(library, BGP_ID), by="BGP_ID")
+
+# clustering
+hclust_groups <- hclust(as.dist(dist_matrix), method = "complete") # complete method here avoids chaining, ensuring all samples in a cluster are within the specified distance of each other. If you want some flexibility you could try "average"
+
+# cut tree at 111.111 km to assign spatial clusters
+meta$GroupID <- cutree(hclust_groups, h = 111111)
+
+# create population labels and filter for minimum cluster size
+meta.sub <- meta %>%
+  mutate(Pop = paste0("Cluster_", GroupID)) %>%
+  group_by(Pop) %>%
+  filter(n() > 4) %>%  # keep clusters with ≥4 individuals
+  ungroup()
+
+pops <- data.frame(BGP_ID = meta.sub$BGP_ID, Group = meta.sub$Pop)
+
+pops %>% write_csv("../scratch/pops.csv")
+
+map <- ne_states(country = c("United States of America", "Canada", "Mexico"), 
+                 returnclass = 'sf')
+
+# create colors for clusters
+n_clusters <- length(unique(meta.sub$Pop))
+cluster_colors <- rainbow(n_clusters)
+names(cluster_colors) <- unique(meta.sub$Pop)
+
+meta.b <- meta.sub %>%
+  group_by(Pop) %>%
+  mutate(cluster_size = n()) %>%
+  ungroup()
+
+# plot it
+p <- ggplot() +
+  geom_sf(data = map, fill = "white", color = "black", size = 0.1) +
+  geom_point(data = meta.b, aes(x = Long, y = Lat, color = Pop),
+             size = 1.5, position = position_jitter(width = 0.1, height = 0.1)) +
+  geom_text(data = meta.b,
+            aes(x = Long, y = Lat, label = Pop),
+            size = 2, vjust = -0.6) +
+  scale_colour_manual(values = cluster_colors, name = "Spatial Clusters", guide = "none") +
+  coord_sf(xlim = c(-145, -55), ylim = c(15, 80)) + 
+  theme_minimal() +
+  labs(title = "All clusters with ≥4 individuals",
+       x = "Longitude",
+       y = "Latitude")
+p
+ggsave("../outputs/original_cluster_plot.png")
+```
+
+## plotting PCA
+### color scheme
+Quick, somewhat neutral color scheme based on geography alone...
+```{r}
+# # Define clusters by region
+# West_clusters    <- c("Cluster_1", "Cluster_5", "Cluster_16", "Cluster_4", "Cluster_9", "Cluster_12", "Cluster_2", "Cluster_20")
+# Central_clusters <- c("Cluster_3", "Cluster_8", "Cluster_17", "Cluster_21", "Cluster_18", "Cluster_19")
+# East_clusters    <- c("Cluster_6", "Cluster_14", "Cluster_11", "Cluster_10", "Cluster_13", "Cluster_15", "Cluster_7")
+# 
+# # Assign colors by cluster
+# library(RColorBrewer)
+# W.cols <- setNames(brewer.pal(n = length(West_clusters), "Reds"), West_clusters)
+# C.cols <- setNames(brewer.pal(n = length(Central_clusters), "Blues"), Central_clusters)
+# E.cols <- setNames(brewer.pal(n = length(East_clusters), "Greens"), East_clusters)
+# bg <- c(W.cols, C.cols, E.cols)
+# saveRDS(bg, file = "../figures/colors/bg_colors.rds")
+bg <- readRDS("../figures/colors/bg_colors.rds")
+```
+### plotting
+```{r}
+plink_pca <- read.table("../scratch/PCA/PC1_allindv.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+
+#just saving a sample list real quick...
+plink_pca <- read.table("../scratch/PCA/PC1_allindv.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(V1) %>% rename(BGP_ID=V1) %>% write_csv("../scratch/BANS_allind_sample_list.csv")
+
+eigenval <- scan("../scratch/PCA/PC1_allindv.ld25-10-0.5.eigenval")
+
+pve05 <- data.frame(PC = 1:208, pve = eigenval/sum(eigenval)*100)
+
+# set names
+pca05 <- plink_pca
+colnames(pca05)[-1] <- paste0("PC", 1:(ncol(pca05) - 1))
+names(pca05)[1] <- "ind"
+nrow(pca05)
+#correct number of samples
+
+pops <- read.csv("../scratch/pops.csv")
+
+# Join PCA data
+pca.cluster <- left_join(pca05, pops %>% rename(ind=BGP_ID), by="ind")  # left_join PCA first to preserve PC columns
+
+# Factor for cluster order
+region_order <- c(
+  "Cluster_1", "Cluster_5", "Cluster_16", "Cluster_4", "Cluster_9", "Cluster_12", "Cluster_2", "Cluster_20",
+  "Cluster_3", "Cluster_8", "Cluster_17", "Cluster_21", "Cluster_18", "Cluster_19",
+  "Cluster_6", "Cluster_14", "Cluster_11", "Cluster_10", "Cluster_13", "Cluster_15", "Cluster_7"
+)
+pca.cluster$Cluster <- factor(pca.cluster$Group, levels = region_order)
+
+# Plot
+b05 <- ggplot(pca.cluster, aes(PC1, PC2, col = Cluster)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = bg) +
+  theme_light() +
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+b05
+ggsave("../figures/pca_plots/BANS_allind_overall_PCA.png", width=8)
+```
+
+Useful place names
+```{r}
+group_key <- tibble(
+  Group = unique(pops$Group),
+  Group_label = c(
+    "Fairbanks, AK",
+    "Royal City, WA",
+    "Brightwater Res, SK",
+    "Peace River, BC",
+    "Whitehorse, YT",
+    "Port Bruce, ON", #6 is pulling some PE stuff closer to Ontario into the same cluster
+    "Wood Islands, PE",
+    "Fort Ellice, MB",
+    "Edmonton, AB",
+    "Sackville, NB",
+    "Meteghan, NS",
+    "Shuswap Band Lands, BC",
+    "D'Aiguillon, QC",
+    "Odanak, QC",
+    "Parson's Pond, NL",
+    "Behchoko, NT",
+    "Oak Hammock, MB",
+    "Buffalo, WY",
+    "Cheyenne, WY",
+    "Missoula, MT",
+    "Jamestown, ND"
+  )
+)
+saveRDS(group_key, "../scratch/geo_informative_labels.RDS")
+```
+
+```{r}
+meta.b.plot <- meta.b %>%
+  rename(Group = Pop) %>%   # only needed if meta.b uses Pop instead of Group
+  left_join(group_key, by = "Group")
+
+bg <- readRDS("../figures/colors/bg_colors.rds")
+p <- ggplot() +
+  geom_sf(data = map, fill = "white", color = "black", linewidth = 0.1) +
+  geom_point(
+    data = meta.b.plot,
+    aes(x = Long, y = Lat, color = Group),
+    size = 1.5,
+    position = position_jitter(width = 0.1, height = 0.1)
+  ) +
+  geom_text(
+    data = meta.b.plot,
+    aes(x = Long, y = Lat, label = Group_label),
+    size = 2,
+    vjust = -0.6
+  ) +
+  scale_colour_manual(values = bg, name = "Spatial Clusters", guide = "none") +
+  coord_sf(xlim = c(-145, -55), ylim = c(15, 80)) +
+  theme_minimal() +
+  labs(
+    title = "All clusters with ≥4 individuals",
+    x = "Longitude",
+    y = "Latitude"
+  )
+
+p
+
+ggsave("../figures/BANS_allind_cluster_map_bg.png", plot = p, width = 10, height = 7, dpi = 300)
+```
+
+# Remove Related Individuals
+## NGSrelate
+Using NGSrelate
+```{bash, label="ngsRelate install"}
+conda activate bioinf
+#stuff I need to make the libraries install correctly
+mamba install -c conda-forge bzip2 zlib xz libcurl
+
+git clone --recursive https://github.com/SAMtools/htslib
+#this misses a necessary thing libhts.a so gotta do it again
+cd /projects/ericacnr@colostate.edu/htslib
+make clean
+
+# make sure it uses conda include/lib
+make -j2 libhts.a \
+  CPPFLAGS="-I$CONDA_PREFIX/include" \
+  LDFLAGS="-L$CONDA_PREFIX/lib" \
+  LIBS="-lz -lbz2 -llzma -lcurl"
+  
+# get ngsRelate
+git clone https://github.com/ANGSD/ngsRelate
+cd htslib/;make -j2;cd ../ngsRelate;make HTSSRC=../htslib/
+```
+
+Running on just the one big chromosome.
+```{bash}
+vcf="/scratch/alpine/ericacnr@colostate.edu/BANS/02.imputation/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.imputed4.1.final.vcf.gz"
+
+chr="CM026847.1"
+
+bcftools $vcf
+bcftools view -r $chr -Oz -o BANS.${chr}.vcf.gz $vcf
+
+bcftools index -t BANS.${chr}.vcf.gz
+```
+
+```{bash}
+#!/bin/bash
+#
+#SBATCH --job-name=relate
+#SBATCH --output=relate.%j.out
+#SBATCH --error=relate.%j.err
+#################
+#SBATCH -t 2:00:00
+#SBATCH -p amilan
+#SBATCH --qos=normal
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node 5
+#SBATCH --mem=12G
+#################
+#SBATCH --mail-type=END
+#SBATCH  --mail-user=ericacnr@colostate.edu
+##################
+#echo commands to stdout
+
+path="/projects/ericacnr@colostate.edu/ngsRelate/"
+chr="CM026847.1"
+
+$path/ngsRelate -h BANS.${chr}.vcf.gz -T GT -c 1 -O vcf.${chr}.res
+```
+
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/02.5.neutral_pop_struc/vcf.CM026847.1-2.res /Users/ericarobertson/Desktop/BANS_Pub/analysis/03.delineate_ESUs/scratch/ngsRelate?
+```
+
+```{r}
+res <- fread("../scratch/ngsRelate/vcf.CM026847.1-2.res")
+
+colnames(res)
+
+range(res$rab)
+range(res$KING)
+```
+
+Checking for which indv I think are related.
+```{r}
+library(plotly)
+rel <- ggplot(pca.cluster, aes(
+    x = PC1, 
+    y = PC2, 
+    col = Group,
+    text = paste0(
+        "ID: ", ind, "<br>",
+        "Group: ", Group, "<br>",
+        "PC1: ", round(PC1, 4), "<br>",
+        "PC2: ", round(PC2, 4)
+    )
+)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = bg) +
+  theme_light() +
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+ggplotly(rel)
+```
+Most of Cluster16...
+25N03069 - 25N03072
+25N03076
+25N03078 - 25N03068
+25N03074 - 25N03070
+
+Cluster 20 
+25N17432
+25N17424 - 25N17421
+
+Cluster 21
+25N19612
+
+Checking relatedness values for those.. three options for relatedness metrics:
+res$rab
+res$theta
+res$KING
+
+Rules of thumb for diploids (unadmixed, reasonably good data):
+Unrelated: θ ~ 0, rab ~ 0
+3rd-degree (first cousins): θ ~ 0.0625, rab ~ 0.125
+2nd-degree (half-sibs / avuncular / grandparent): θ ~ 0.125, rab ~ 0.25
+1st-degree (parent–offspring / full sib): θ ~ 0.25, rab ~ 0.5
+```{r}
+hist(res$rab)
+#top rab pairs
+top.rab <- res %>% filter(rab >=0.125)
+nrow(top.rab)
+top.rab
+
+unique(top.rab$ida)
+unique(top.rab$idb)
+
+samp_list <- read_csv("../scratch/BANS_allind_sample_list.csv") %>% rename(IID=BGP_ID)
+
+samp_unrel <- samp_list %>% filter(!IID %in% unique(top.rab$ida))# %>% filter(!IID %in% unique(top.rab$idb))
+nrow(samp_unrel)
+
+samp_unrel %>% write_delim("../scratch/BANS_unrel_sample_list_short.txt")
+```
+
+If we remove those individuals, does it improve the PCA?
+
+```{bash}
+conda activate bioinf
+vcf="/scratch/alpine/ericacnr@colostate.edu/BANS/02.imputation/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.imputed4.1.final.vcf.gz"
+
+bcftools view -S BANS_unrel_sample_list_short.txt -Oz -o BANS.filtered.unrel.vcf.gz "$vcf"
+bcftools index -t BANS.filtered.unrel.vcf.gz
+```
+
+Also going to try using PCANGSD for the PCA because apparently they often look better.
+```{bash, label="installing pcangst to projects"}
+conda create -n pcangsd python=3.10 -y
+conda activate pcangsd
+
+mamba install -c conda-forge cython numpy scipy pandas h5py -y
+
+git clone https://github.com/Rosemeis/pcangsd.git
+cd pcangsd/
+python setup.py build_ext --inplace
+pip install --user -r requirements.txt
+
+```
+
+```{bash, label="making input bedfile"}
+conda activate GWAS2
+vcf="BANS.filtered.unrel.vcf.gz"
+plink --vcf $vcf --aec --recode --out BANS.filtered.unrel
+#3123808 variants and 201 people pass filters and QC.
+
+cat BANS.filtered.unrel.map | awk -F"\t" '{split($1, a, "__"); print $1"\t"a[1]"."$4"\t"$3"\t"$4}' > BANS.filtered.unrel_loc.map
+
+plink --ped BANS.filtered.unrel.ped \
+--map BANS.filtered.unrel_loc.map \
+--make-bed --aec \
+--out BANS.filtered.unrel
+
+bfile="BANS.filtered.unrel"
+
+plink --bfile $bfile --aec \
+--indep-pairwise 25 10 0.5 --out BANS.filtered.unrel
+#278863 of 3123808 variants removed.
+
+plink --bfile $bfile --aec --extract BANS.filtered.unrel.prune.in \
+  --make-bed --out BANS.filtered.unrel_pruned
+#2844945 variants and 201 people pass filters and QC.
+
+plink --bfile BANS.filtered.unrel_pruned --aec --allow-no-sex --pca 189 \
+  --out BANS.filtered.unrel.ld25-10-0.5
+#2844945 variants and 201 people pass filters and QC.
+```
+
+```{bash}
+#!/bin/bash
+#
+#SBATCH --job-name=pcadmix
+#SBATCH --output=pcadmix.%j.out
+#SBATCH --error=pcadmix.%j.err
+#SBATCH -t 5:00:00
+#SBATCH --partition=amilan
+#SBATCH --qos=normal
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node 11
+#SBATCH --mem=40G
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH  --mail-user=ericacnr@colostate.edu
+##################
+#echo commands to stdout
+
+set -x
+
+source ~/.bashrc
+conda activate pcangsd
+
+pcangsd_path="/projects/ericacnr@colostate.edu/pcangsd"
+
+export PYTHONPATH="/projects/ericacnr@colostate.edu/pcangsd:$PYTHONPATH"
+
+for eig in {1..5}
+do
+  for r in {1..5}
+         do
+          $CONDA_PREFIX/bin/python $pcangsd_path/pcangsd/main.py -p BANS.filtered.unrel_pruned -t 4 --admix --admix-seed $RANDOM -e $eig --admix-alpha 10000 -o BANS.filtered.unrel_pruned.alpha10K.e"$eig".run"$r"
+        done
+done
+```
+
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/02.5.neutral_pop_struc/BANS.filtered.unrel.ld25-10-0.5.eigen* /Users/ericarobertson/Desktop/BANS_adaptive_units/analysis/02.5.delineate_ESUs/
+```
+
+```{r}
+plink_pca <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+eigenval <- scan("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenval")
+
+pve05 <- data.frame(PC = 1:189, pve = eigenval/sum(eigenval)*100)
+ggplot(pve05[1:20, ], aes(x = PC, y = pve)) +
+  geom_col(width = 0.9) +
+  labs(x = "PC", y = "PVE (%)") +
+  theme_bw()
+
+# set names
+pca05 <- plink_pca
+colnames(pca05)[-1] <- paste0("PC", 1:(ncol(pca05) - 1))
+names(pca05)[1] <- "ind"
+nrow(pca05)
+#correct number of samples
+
+bg <- readRDS("../figures/colors/bg_colors.rds")
+
+pops <- read.csv("../scratch/pops.csv") %>% filter(BGP_ID %in% pca05$ind)
+
+# Join PCA data
+pca.cluster <- left_join(pca05, pops %>% rename(ind=BGP_ID), by="ind")  # left_join PCA first to preserve PC columns
+
+samp_unrel  <-  fread("../scratch/BANS_unrel_sample_list_short.txt")
+pca.cluster.norel <- pca.cluster %>% filter(ind %in% samp_unrel$IID)
+nrow(pca.cluster.norel)
+
+geo_key <- readRDS("../scratch/geo_informative_labels.RDS")
+geo_letters <- read.csv("../scratch/cluster_letter_key_geo_lonlat.csv")
+letter_order <- sort(unique(pca.cluster.norel$cluster_letter))
+
+pca.cluster.norel <- left_join(pca.cluster.norel, geo_key, by="Group") %>% left_join(geo_letters, by="Group")
+
+rel.nr <- ggplot(pca.cluster.norel, aes(
+    x = PC1, 
+    y = PC2, 
+    col = Group,
+    text = paste0(
+        "ID: ", ind, "<br>",
+        "Location: ", cluster_letter, "<br>",
+        "PC1: ", round(PC1, 4), "<br>",
+        "PC2: ", round(PC2, 4)
+    )
+)) +
+  geom_point(size = 3) +
+  scale_color_manual(
+  values = bg,
+  breaks = letter_order,
+  labels = setNames(pca.cluster.norel$cluster_letter, pca.cluster.norel$Group)
+)+
+  theme_light() +
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+ggplotly(rel.nr)
+rel.nr
+
+ggsave("../figures/pca_plots/BANS_PCA_norel_regionlabels_ordered.png", width = 8.5, height = 7)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# key: one row per Group with its cluster letter
+key <- pca.cluster.norel %>%
+  distinct(Group, cluster_letter)
+
+# order Groups by alphabetic cluster letter
+group_breaks <- key %>%
+  arrange(cluster_letter) %>%
+  pull(Group)
+
+# labels: named by Group, values are cluster letters
+group_labels <- setNames(key$cluster_letter, key$Group)
+
+rel.nr <- ggplot(pca.cluster.norel, aes(
+  x = PC1,
+  y = PC2,
+  col = Group,
+  text = paste0(
+    "ID: ", ind, "<br>",
+    "Location: ", cluster_letter, "<br>",
+    "PC1: ", round(PC1, 4), "<br>",
+    "PC2: ", round(PC2, 4)
+  )
+)) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = bg,
+    breaks = group_breaks,
+    labels = group_labels,
+    name = "Cluster"   # optional legend title
+  ) +
+  theme_light() +
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+rel.nr
+ggsave("../figures/pca/BANS_PCA_norel_letter_labels_ordered.png", width = 8.5, height = 7)
+
+```
+
+Yay, that looks much cleaner. Let's see if ADMIX likes it.
+
+
+# ADMIXTURE
+## old way
+ADMIXTURE does not accept chromosome names that are not human chromosomes. We will thus just exchange the first column by 0
+
+```{bash}
+awk '{$1="0";print $0}' BANS.filtered.unrel_pruned.bim > BANS.filtered.unrel_pruned.bim.tmp
+mv BANS.filtered.unrel_pruned.bim.tmp BANS.filtered.unrel_pruned.bim
+```
+
+Running admixture with k=1-3
+
+```{bash, label="bash"}
+#!/bin/bash
+#
+#SBATCH --job-name=admix
+#SBATCH --output=admix.%j.out
+#SBATCH --error=admix.%j.err
+#################
+#SBATCH -t 2:00:00
+#SBATCH -p amilan
+#SBATCH --qos=normal
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node 5
+#SBATCH --mem=12G
+#################
+#SBATCH --mail-type=END
+#SBATCH  --mail-user=ericacnr@colostate.edu
+##################
+#echo commands to stdout
+
+source ~/.bashrc
+
+num=$1
+conda activate GWAS2
+admixture --cv BANS.filtered.unrel_pruned.bed $num > BANS.filtered.unrel_pruned.log"$num".out
+```
+
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/02.5.neutral_pop_struc/BANS.filtered.unrel_pruned*.Q /Users/ericarobertson/Desktop/BANS_adaptive_units/analysis/02.5.delineate_ESUs
+```
+
+To identify the best value of k clusters which is the value with lowest cross-validation error, we need to collect the cv errors. 
+
+```{bash}
+awk '/CV/ {print $3,$4}' BANS.filtered.unrel_pruned*out | cut -c 4,7-20
+```
+1 0.51944
+2 0.53064
+3 0.55535
+
+So, this is suggesting that there isn't a strong signal of population structure an k=1 is the best supported. This is reasonable considering the strong IBD signal. So, let's plot the admix but also do some feems to see if there are strong barrier to migration present that might help us delineate stuff.
+
+```{r}
+samplelist <- pca05$ind
+
+all_data <- tibble(sample=character(),
+                   k=numeric(),
+                   Q=character(),
+                   value=numeric())
+
+for (k in 1:4){
+    data <- read_delim(paste0("admix_output/BANS.filtered.unrel_pruned.",k,".Q"),
+                       col_names = paste0("Q",seq(1:k)),
+                       delim=" ")
+    data$sample <- samplelist
+    data$k <- k
+    
+    #This step converts from wide to long.
+    data %>% gather(Q, value, -sample,-k) -> data
+    all_data <- rbind(all_data,data)
+}
+
+head(all_data)
+
+ADMIX_plot <- all_data %>%
+  filter(k %in% 1:4) %>%
+  ggplot(aes(x = sample, y = value, fill = factor(Q))) +
+  geom_bar(stat = "identity", width = 1) +
+  facet_wrap(~ k, ncol = 1, scales = "free_y") +
+  xlab("Sample") +
+  ylab("Ancestry proportion") +
+  scale_fill_brewer(palette = "Set1", name = "Cluster") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    panel.spacing = unit(0.3, "lines")
+  )
+ggsave("plots/final_ESU/BANS_ADMIX_k1-4.png",width = 10)
+ADMIX_plot
+```
+
+```{r}
+all_k <- all_data %>%
+  ggplot(aes(x = sample, y = value, fill = factor(Q))) + 
+  geom_bar(stat = "identity", position = "stack") +
+  xlab("Sample") + ylab("Ancestry") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1, size = 5)) +  # Adjust size here
+  scale_fill_brewer(palette = "Set1", name = "K", labels = seq(1:5)) +
+  facet_wrap(~k, ncol = 1)
+
+ggplotly(all_k)
+```
+
+## pcangsd admix
+for eig in {1..5}
+do
+  for r in {1..5}
+         do
+          $CONDA_PREFIX/bin/python $pcangsd_path/pcangsd/main.py -p BANS.filtered.unrel_pruned -t 4 --admix --admix-seed $RANDOM -e $eig --admix-alpha 10 -o BANS.filtered.unrel_pruned.alpha10.e"$eig".run"$r"
+        done
+done
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/02.5.neutral_pop_struc/BANS.filtered.unrel_pruned.alpha0.*extratest*.Q /Users/ericarobertson/Desktop/BANS_adaptive_units/analysis/02.5.delineate_ESUs/intermediates/admix_output/pcadmix_output/
+```
+
+```{r, label="plotting_with_pophelper", message=FALSE, warning=FALSE}
+library(pophelper)
+library(data.table)
+library(dplyr)
+library(stringr)
+library(gridExtra)
+library(grid)
+
+# Inputs
+q_dir   <- "pcadmix_output"
+q_pat   <- "^BANS.filtered.unrel_pruned.alpha5.*\\.Q$"
+famfile <- "BANS.filtered.unrel.fam"
+metafile <- "../03.GEA/results/BANS_topRDA_vars1mil.csv"
+
+# cluster colors (use bg if it exists; otherwise define a fallback)
+bg <- c(
+  "#E69F00", # orange
+  "#56B4E9", # sky blue
+  "#009E73", # bluish green
+  "#F0E442", # yellow
+  "#0072B2", # blue
+  "#D55E00", # vermillion
+  "#CC79A7", # reddish purple
+  "#999999", # gray
+  "#44AA99", # teal
+  "#AA4499"  # magenta
+)
+
+region_order <- c(
+  "Cluster_1","Cluster_5","Cluster_16","Cluster_4","Cluster_9","Cluster_12","Cluster_2","Cluster_20",
+  "Cluster_3","Cluster_8","Cluster_17","Cluster_21","Cluster_18","Cluster_19",
+  "Cluster_6","Cluster_14","Cluster_11","Cluster_10","Cluster_13","Cluster_15","Cluster_7"
+)
+
+
+# Read Q files + add sample IDs
+sfiles <- list.files(path = q_dir, pattern = q_pat, full.names = TRUE)
+stopifnot(length(sfiles) > 0)
+
+slist <- readQ(files = sfiles, filetype = "basic", indlabfromfile = FALSE)
+
+inorder <- fread(famfile, header = FALSE)[, .(IID = V1)]  # your IDs are in V1
+
+# assign rownames across all runs (only if dimensions match)
+if (length(unique(sapply(slist, nrow))) == 1 && nrow(slist[[1]]) == nrow(inorder)) {
+  slist <- lapply(slist, `rownames<-`, inorder$IID)
+} else {
+  stop("Row counts differ among Q files and/or don't match the .fam; can't safely assign IID rownames.")
+}
+
+
+# Build Region labels aligned to Q rows
+meta <- read.csv(metafile) %>% filter(BGP_ID %in% inorder$IID)
+
+Region_vec <- meta$Pop[match(rownames(slist[[1]]), meta$BGP_ID)]
+Region_df <- data.frame(Region = Region_vec, stringsAsFactors = FALSE)
+rownames(Region_df) <- rownames(slist[[1]])
+Region_df$Region <- factor(Region_df$Region, levels = region_order)
+Region_df$Region <- as.character(Region_df$Region)
+
+
+# Parse K/run from filenames (safer to use sfiles, not names(slist))
+
+Kvec   <- as.integer(str_extract(basename(sfiles), "(?<=admix\\.)\\d+"))
+Runvec <- as.integer(str_extract(basename(sfiles), "(?<=run)\\d+"))
+
+# choose which Ks to plot
+Ks <- sort(unique(Kvec[!is.na(Kvec)]))
+stopifnot(length(Ks) > 0)
+
+
+# Build plots (use the first run for each K)
+
+g_list <- vector("list", length(Ks))
+names(g_list) <- paste0("K", Ks)
+
+for (K in Ks) {
+  idx <- which(Kvec == K)
+  idx <- idx[order(Runvec[idx])]
+  idx1 <- idx[1]  # first run for this K
+
+  # pophelper wants a list (even if single run); slist[idx1] already is a list
+  p <- plotQ(
+    alignK(slist[idx1]),
+    grplab = Region_df,
+    showgrplab = TRUE,
+    clustercol = unname(bg[seq_len(K)]),
+    returnplot = TRUE,
+    exportplot = FALSE,
+    ordergrp = TRUE,
+    grplabsize = 1.5,
+    linesize = 0.5,
+    pointsize = 2,
+    grplabangle = 45,
+    grplabheight = 14
+  )
+
+  g_list[[paste0("K", K)]] <- p$plot[[1]]
+}
+
+
+# Save multi-panel PDF (2 cols; auto height)
+
+
+pdf("plots/final_ESU/BANS_pcadmix_filtered.unrel.pruned_alpha5_K2-6_RDAregions_admixture.pdf",
+    width = 10, height = 2.7 * nrow, useDingbats = FALSE)
+plots_to_show <- g_list
+grid.arrange(
+  grobs = plots_to_show,
+  layout_matrix = matrix(seq_along(plots_to_show), byrow = FALSE)
+)
+dev.off()
+```
+
+## color coding this with letters:
+```{r}
+library(pophelper)
+library(data.table)
+library(dplyr)
+library(stringr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(gridExtra)
+library(grid)
+
+# Inputs
+q_dir   <- "../intermediates/admix_output/pcadmix_output"
+q_pat <- "^BANS\\.filtered\\.unrel_pruned\\.alpha0.*extratest.*\\.Q$"
+famfile <- "../intermediates/BANS.filtered.unrel.fam"
+
+popsfile   <- "../intermediates/pops.csv"             # BGP_ID, Group
+letterfile <- "../intermediates/cluster_letter_key_geo_lonlat.csv"           # Group/Pop, cluster_letter
+
+out_pdf    <- "../figures/admix/BANS_pcadmix_overall_alpha0_allK_letters_extratest_GGPLOT.pdf"
+
+# Read Q files + add sample IDs
+
+sfiles <- list.files(path = q_dir, pattern = q_pat, full.names = TRUE)
+stopifnot(length(sfiles) > 0)
+
+slist <- readQ(files = sfiles, filetype = "basic", indlabfromfile = FALSE)
+
+inorder <- fread(famfile, header = FALSE)[, .(IID = V1)]
+stopifnot(length(unique(sapply(slist, nrow))) == 1)
+stopifnot(nrow(slist[[1]]) == nrow(inorder))
+
+slist <- lapply(slist, `rownames<-`, inorder$IID)
+
+
+# Build cluster_letter per individual (aligned to Q rownames)
+
+pops <- read_csv(popsfile, show_col_types = FALSE) %>%
+  transmute(BGP_ID, Group)
+
+letters <- read_csv(letterfile, show_col_types = FALSE)
+
+if ("Pop" %in% names(letters) && !"Group" %in% names(letters)) {
+  letters <- letters %>% rename(Group = Pop)
+}
+stopifnot(all(c("Group", "cluster_letter") %in% names(letters)))
+
+pops.cluster.letter <- pops %>%
+  left_join(letters %>% select(Group, cluster_letter), by = "Group")
+
+# vector of letters in the same order as Q rows
+Letter_vec <- pops.cluster.letter$cluster_letter[
+  match(rownames(slist[[1]]), pops.cluster.letter$BGP_ID)
+]
+
+# letter order (stable)
+letter_levels <- letters %>%
+  distinct(cluster_letter) %>%
+  pull(cluster_letter) %>%
+  trimws()
+
+
+# Parse K/run from filenames
+
+Kvec   <- as.integer(str_extract(basename(sfiles), "(?<=admix\\.)\\d+"))
+Runvec <- as.integer(str_extract(basename(sfiles), "(?<=run)\\d+"))
+
+Ks <- sort(unique(Kvec[!is.na(Kvec)]))
+stopifnot(length(Ks) > 0)
+
+
+# Component color helper (per K)
+
+get_comp_cols <- function(K) {
+
+  # fixed 10-color palette
+  base_cols <- c(
+    "#E69F00", # orange
+    "#56B4E9", # sky blue
+    "#009E73", # bluish green
+    "#F0E442", # yellow
+    "#0072B2", # blue
+    "#D55E00", # vermillion
+    "#CC79A7", # reddish purple
+    "#999999", # gray
+    "#44AA99", # teal
+    "#AA4499"  # magenta
+  )
+
+
+  # if K > 10, interpolate additional colors
+  if (K <= length(base_cols)) {
+    cols <- base_cols[1:K]
+  } else {
+    cols <- colorRampPalette(base_cols)(K)
+  }
+
+  names(cols) <- paste0("ESU", seq_len(K))
+  cols
+}
+
+# Build ggplots + assignments
+
+g_list <- vector("list", length(Ks))
+names(g_list) <- paste0("K", Ks)
+
+assign_list <- vector("list", length(Ks))
+names(assign_list) <- paste0("K", Ks)
+
+for (K in Ks) {
+
+  # pick the first run for this K
+  idx <- which(Kvec == K)
+  idx <- idx[order(Runvec[idx])]
+  idx1 <- idx[1]
+
+  # wide Q (rows = individuals)
+  Qwide <- as.data.frame(slist[[idx1]])
+  stopifnot(ncol(Qwide) == K)
+
+  colnames(Qwide) <- paste0("ESU", seq_len(K))
+  Qwide$ind <- rownames(Qwide)
+
+  # add cluster_letter + (optional) Group
+  meta_ind <- tibble(
+    ind = rownames(slist[[idx1]]),
+    cluster_letter = trimws(as.character(Letter_vec))
+  ) %>%
+    mutate(cluster_letter = factor(cluster_letter, levels = letter_levels))
+
+  # long for ggplot
+  q_long <- Qwide %>%
+    left_join(meta_ind, by = "ind") %>%
+    filter(!is.na(cluster_letter)) %>%
+    pivot_longer(cols = starts_with("ESU"),
+                 names_to = "popGroup",
+                 values_to = "prob") %>%
+    mutate(
+      popGroup = factor(popGroup, levels = paste0("ESU", seq_len(K)))
+    )
+
+  # ggplot for this K
+  comp_cols <- get_comp_cols(K)
+
+  g_list[[paste0("K", K)]] <-
+    ggplot(q_long, aes(x = ind, y = prob, fill = popGroup)) +
+    geom_col(color = "gray", linewidth = 0.1) +
+    facet_grid(~cluster_letter, switch = "x", scales = "free_x", space = "free_x") +
+    theme_minimal() +
+    labs(x = "", y = "Ancestry", title = paste0("K = ", K)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    scale_x_discrete(expand = expansion(add = 1)) +
+    theme(
+      panel.spacing.x = unit(0.001, "lines"),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      strip.text.x = element_text(angle = 0, vjust = 0.5, hjust = 0.5, size = 8),
+      panel.grid = element_blank()
+    ) +
+    scale_fill_manual(values = comp_cols, guide = "none")
+
+}
+
+pdf(out_pdf, width = 10, height = 2.2 * length(g_list), useDingbats = FALSE)
+grid.arrange(
+  grobs = g_list,
+  layout_matrix = matrix(seq_along(g_list), ncol = 1, byrow = FALSE)
+)
+dev.off()
+
+message("Saved PDF: ", out_pdf)
+message("Saved assignments: ", out_assign)
+```
+#### double checking convergence
+```{r}
+library(tidyverse)
+
+#log-likelihoods pulled from the output file for alpha=0: awk '/Log-likelihood:/ {print $NF}' pcadmix.22816373.out
+
+# awk '
+# /Log-likelihood:/ {
+#   vals[n++] = $NF
+# }
+# END {
+#   printf("loglik_vals <- c(\n  ")
+#   for (i = 0; i < n; i++) {
+#     printf("%s", vals[i])
+#     if (i < n-1) {
+#       if ((i+1) % 5 == 0)
+#         printf(",\n  ")
+#       else
+#         printf(", ")
+#     }
+#   }
+#   printf("\n)\n")
+# }
+# ' pcadmix.23335757.out
+
+#pcadmix.23335757.out
+loglik_vals <- c(
+  -317379697.37537, -317379813.54059, -317379678.38043, -317379760.91672, -317379713.25396,
+  -314899814.78644, -314899716.79290, -314899793.68513, -314899574.60226, -314899754.03714,
+  -312851042.25835, -312850828.66974, -312851082.17316, -312851247.93471, -312850893.01092,
+  -310629491.65431, -310629568.51323, -310629372.21268, -310629284.03814, -310629277.99590,
+  -308942526.42675, -308942091.66666, -308942166.14086, -308942631.48534, -308942846.93230
+)
+
+Ks
+runs_per_k <- 5
+
+ll_df <- tibble(
+  K = rep(Ks, each = runs_per_k),
+  run = rep(1:runs_per_k, times = length(Ks)),
+  logLik = loglik_vals
+)
+
+ll_sum <- ll_df %>%
+  group_by(K) %>%
+  summarise(
+    meanLL = mean(logLik),
+    sdLL   = sd(logLik),
+    .groups = "drop"
+  )
+
+p_ll <- ggplot(ll_sum, aes(x = K, y = meanLL)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = meanLL - sdLL, ymax = meanLL + sdLL), width = 0.15) +
+  labs(x = "K", y = "Mean log-likelihood (± SD across runs)") +
+  theme_bw()
+
+p_ll
+
+p_ll_runs <- ggplot(ll_df, aes(x = K, y = logLik, group = run)) +
+  geom_point(alpha = 0.8) +
+  geom_line(alpha = 0.4) +
+  theme_bw() +
+  labs(x = "K", y = "Log-likelihood (each run)")
+
+p_ll_runs
+```

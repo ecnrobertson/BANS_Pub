@@ -1,0 +1,912 @@
+---
+title: "03.b.grouping_scheme_outputs"
+output: html_document
+---
+
+# LIBRARIES
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggthemes)
+library(patchwork)
+library(cowplot)
+library(ggpubr)
+library(sf)
+library(raster)
+library(terra)
+library(rnaturalearth)
+library(tess3r)
+library(genoscapeRtools)
+library(mignette)
+library(ggplot2)
+library(ggrepel)
+library(pophelper)
+library(data.table)
+library(stringr)
+library(gridExtra)
+library(grid)
+```
+
+# INTRODUCTION
+After evaluating the basic population structure information we can potentially make multiple different genetically based ESU groupings. And, when comparing with the migration data, we might subdivide some ESUs into MUs. For each of these options, we need a genoscape, and admixture plot for that k value (genomic options only), and some colored PCAs. Potential schemes are:
+
+G4 - genomics only, K of 4
+G5 - genomics only, K of 5
+GM5 - G4 + migration, K of 5
+GM6 - G5 + migration, K of 6
+
+The following will be the initial code walk-through for G4, then implementation of functions to tidy up the rest and make iteration easier. The K values used for the following admixture and genoscapes are calculated using ANGST PCA functions, as described in 03.a.initial_popstructure.Rmd.
+
+When I've done the genomics only files, I'll show careful code for how I force the split based on the migration data and generate the PCAs and genoscapes for that. No admixture plots are output for these as they would be misleading to interpret.
+
+Finally, I read back in the genoscape outputs for each grouping scheme and run them in mignette (custom R package designed by Matt Desaix) to get conservation unit polygons that go into the spatial analysis later.
+
+# GENOMICS ONLY ESU DELINEATION
+## G4
+### Genoscape
+To start, load the .Q file. Load the admixture proportions and merge with a sample list you (same order as admix input). I did run multiple iterations for each K value, but I found that there was significant overlap across runs showing good convergence so for this analysis I will just be reading in Run 1 for the appropriate K value. I also testing different alpha values with no significant differences between alpha 0 and alpha 10, so I will again be using only the alpha0 iterations for these figures and subsequent analysis. I'm also using a custom color pallet established here and repeated throughout all additional analyses.
+
+The admixture outputs (.Q files) don't have sample associated with them. Because I used the plink ped files as my input for ANGST when making these the sample order will be uniform across .Q files and the overall PCA eigen files. So, we can use the eigen files to pull the sample IDs.
+```{r, message=FALSE, warning=FALSE}
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e3.run1.admix.4.Q") %>%
+  setNames(paste0("ESU", 1:4))
+pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+
+colnames(pca_df)[-1] <- paste0("PC", 1:(ncol(pca_df) - 1))
+names(pca_df)[1] <- "ind"
+
+Q_tibble$Sample <- pca_df$ind
+
+K <- ncol(Q_tibble)-1
+
+# Making the color pallet
+cols <-  c(
+  "ESU1" = "#C1839F",
+  "ESU2" = "#FF5A5F",
+  "ESU3" = "#8ACB88",
+  "ESU4" = "#FFBF46")
+barplot(
+  rep(1, length(cols)),
+  col = cols,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols),
+  las = 2
+)
+```
+Now we pull in the sample data to get the lat long so we have spatial data for all the k values. This allows for the genoscape interpolation later.
+
+```{r, message=FALSE, warning=FALSE, label="meta"}
+all <- read_csv("../../../raw_data/BANS_all_sample_data_shifted.csv") %>% filter(BGP_ID %in% pca_df$ind)
+
+ind_filtered <- all %>%
+  mutate(Region_site=paste(State, Lat, Long, sep="_"), Region_pop=State)
+
+LatLong_tibble <- Q_tibble %>%
+  dplyr::select(Sample) %>%
+  left_join(ind_filtered, by = c("Sample" = "BGP_ID")) %>%
+  dplyr::select(Sample, Lat, Long)
+```
+
+Now we need the breading range, but in this bird that's a global map (from eBird), so we crop it down to just North America.
+```{r, label="base map"}
+map <- ne_states(country = c("United States of America", "Canada"), 
+                 returnclass = 'sf')
+na_union <- st_union(map)
+
+breeding.sf <- st_read("../../../raw_data/spatial_files/banswa_range_2023.gpkg") %>% filter(season=="breeding")  %>% st_transform(crs(map))
+
+#clip BANS range to just NA and make a single, clean polygon
+breeding_na <- st_intersection(breeding.sf, na_union)
+
+plot(st_geometry(breeding_na))
+```
+
+Alright, step on of the genoscape is to make the genoscape "brick". This is basically just the individual ESU K value interpolated across space. So there's a layer for each ESU with green showing where the K values are higher and white/pink being the lower values.
+```{r, label="brick"}
+# prepare the data for tess3Q_map_rasters
+long_lat_tibble <- Q_tibble %>%
+  dplyr::select(Sample) %>%
+  left_join(LatLong_tibble, by = "Sample") %>%
+  dplyr::select(Long, Lat) 
+
+long_lat_matrix <- long_lat_tibble %>%
+  as.matrix()
+
+# make a matrix of Q values
+Q_matrix <- Q_tibble %>%
+  dplyr::select(-Sample) %>%
+  as.matrix()
+
+bad <- which(!is.finite(long_lat_matrix[,1]) | !is.finite(long_lat_matrix[,2]))
+length(bad)
+
+# interpolate the Q-values by kriging using tess3r::tess3Q_map_rasters()
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = breeding_na,
+  window = extent(breeding_na)[1:4],
+  resolution = c(1000,1000), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(cols, K), 
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(10),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+names(genoscape_brick) <- names(Q_tibble)[-(K+1)]
+names(genoscape_brick)
+
+# we write this out to use later for the spatial polygons
+writeRaster(genoscape_brick, "../scratch/genoscape_output/BANS_overall_genoscape_brick_pcadmix_G4.tif", overwrite = TRUE)
+```
+
+Then we scale that and give it a coordinate system. This also kicks it to red, green, blue and alpha values which is what get's layered to make the colors we actually want for the final genoscape.
+```{r}
+# scaling and cleaning the genoscape_brick
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = cols, 
+  alpha_scale = 3, 
+  abs_thresh = 0.0, 
+  alpha_exp = 1.55, 
+  alpha_chop_max = 230
+)
+
+# at this point, we must be explicit about adding a projection to the raster.
+# this adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Now we need some spatial landmarks to make this resulting plot easier to interpret in space.
+```{r, message=FALSE, warning=FALSE, results='hide'}
+# get shapefiles from natural earth
+coastlines <- ne_download(scale = 10, type = "coastline", category = "physical", returnclass = "sf")
+countries <- ne_download(scale = 10, type = "admin_0_boundary_lines_land", category = "cultural", returnclass = "sf")
+states <- ne_download(scale = 10, type = "admin_1_states_provinces_lines", category = "cultural", returnclass = "sf")
+ocean <- ne_download(scale = 10, type = "ocean", category = "physical", returnclass = "sf")
+lakes <- ne_download(scale = 10, type = "lakes", category = "physical", returnclass = "sf")
+```
+
+Finally, the plotting.
+```{r, message=FALSE, warning=FALSE}
+# reproject to a Lambert conic projection
+lamproj <- "+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+genoscape_spat <- rast(genoscape_rgba)
+
+genoscape_projected <- terra::project(genoscape_spat, lamproj, method = "near")
+
+# generate bounding box to crop the above rnaturalearth layers to the same area as the genoscape
+bb <- st_bbox(breeding_na) %>% st_transform(lamproj)
+
+coords_sf <- st_as_sf(
+  LatLong_tibble,
+  coords = c("Long", "Lat"),
+  crs = 4326   # WGS84 (lon/lat)
+)
+
+# then we want to get the sample points as coded by letter, which I established previously
+cluster_geo <- read.csv("../scratch/cluster_letter_key_geo_lonlat.csv")
+
+## make sf points from lon/lat
+cluster_geo_sf <- st_as_sf(
+  cluster_geo,
+  coords = c("cen_lon", "cen_lat"),
+  crs = 4326,      # lon/lat
+  remove = FALSE
+)
+
+## transform to your map CRS (lamproj must be a valid CRS/proj string)
+cluster_geo_sf <- st_transform(cluster_geo_sf, st_crs(lamproj))
+
+# plot it
+genoscape <- ggplot() +
+  ggspatial::layer_spatial(genoscape_projected) +
+  geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = ocean, fill = "#bddbe6") +
+  geom_sf(data = lakes, fill = "#bddbe6") + #bddbe6
+  #geom_spatial_point(data = long_lat_tibble, mapping = aes(x = Long, y = Lat), size=1, alpha = 0.7) + 
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1)) +
+  geom_sf(data=cluster_geo_sf)+
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)+
+  geom_label_repel(
+    data = cluster_geo_sf,
+    aes(label = cluster_letter, geometry = geometry),
+    stat = "sf_coordinates",
+    size = 2.5,            # increase text size (try 2.2–3.0
+    fontface = "bold",
+    label.size = .2,
+    fill = "white",
+    alpha = 1,
+    box.padding = 0.25,
+    point.padding = 0.2,
+    segment.color = "black",
+    segment.size = 0.5,
+    min.segment.length = 0
+)
+genoscape
+```
+Save as both a png and pdf
+```{r}
+ggsave(plot=genoscape, "../figures/genoscape_plots/BANS_genoscape_G4_overall.png")
+
+pdf("../figures/genoscape_plots/BANS_genoscape_G4_overall.pdf")
+print(genoscape)
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Admixture Plots
+Alright, now we just want an appropriately colored admixture plot for each K value we've selected.
+```{r}
+# which K value do we want to pull?
+K_target <- 4
+
+# read in the Q files and pca files
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e3.run1.admix.4.Q") %>%
+  setNames(paste0("ESU", 1:5))
+pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+
+colnames(pca_df)[-1] <- paste0("PC", 1:(ncol(pca_df) - 1))
+names(pca_df)[1] <- "ind"
+
+Q_tibble$ind <- pca_df$ind
+
+# colors from before, just renamed
+component_colors <- cols
+
+# Cluster membership and letter
+pops <- read_csv("../scratch/pops.csv", show_col_types = FALSE) %>%
+  transmute(ind = BGP_ID, Group)
+
+letter_key <- read_csv("../scratch/cluster_letter_key_geo_lonlat.csv", show_col_types = FALSE)
+
+pops.cluster.letter <- left_join(pops, letter_key, by="Group")
+
+Q_tibble2 <- Q_tibble %>%
+  left_join(pops.cluster.letter, by = "ind") %>%
+  filter(!is.na(cluster_letter))
+
+# Long format for ggplot
+q_long <- Q_tibble2 %>%
+  pivot_longer(cols = starts_with("ESU"),
+               names_to = "popGroup",
+               values_to = "prob")%>%
+  mutate(
+    cluster_letter = factor(cluster_letter, levels = unique(letter_key$cluster_letter)),
+    popGroup = factor(popGroup, levels = paste0("ESU", 1:K_target))
+  )
+
+# Plot
+K_plot <- ggplot(q_long, aes(x = factor(ind), y = prob, fill = factor(popGroup))) +
+  geom_col(color = "gray", linewidth = 0.1) +
+  facet_grid(~cluster_letter, switch = "x", scales = "free", space = "free") +
+  theme_minimal() +
+  labs(x = "", y = "Ancestry", title = "") +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_discrete(expand = expansion(add = 1)) +
+  theme(
+    panel.spacing.x = unit(0.001, "lines"),
+    axis.text.x = element_blank(),
+    strip.text.x = element_text(angle = 0, vjust = 0.5, hjust = 0.5, size = 8),
+    panel.grid = element_blank()
+  ) +
+  scale_fill_manual(values = component_colors, guide = "none")
+
+K_plot
+
+out_plot <- "../figures/admix_plots/BANS_admix_overall_alpha0_G4_letters.png"
+
+ggsave(out_plot, K_plot, width = 10, height = 2.2, units = "in", dpi = 300, bg = "white")
+```
+
+Then we need this little admix assignment code for the colored PCA in the next step...
+```{r}
+admix_group <- q_long %>%
+  group_by(ind) %>%
+  slice_max(prob, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  transmute(
+    BGP_ID = ind,
+    admix_group = popGroup   # e.g. AU1–AU5
+  )
+
+write_tsv(admix_group, "../scratch/admix_output/admix_ESU_group_G4.tsv")
+```
+
+### Colored PCA Plots
+#### colored by ESU, solid color
+```{r}
+plink_pca <- read.table("../intermediates/pca/PCA_eigen/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+eigenval <- scan("../intermediates/pca/PCA_eigen/BANS.filtered.unrel.ld25-10-0.5.eigenval")
+
+pve05 <- data.frame(PC = 1:189, pve = eigenval/sum(eigenval)*100)
+ggplot(pve05[1:20, ], aes(x = PC, y = pve)) +
+  geom_col(width = 0.9) +
+  labs(x = "PC", y = "PVE (%)") +
+  theme_bw()
+
+# set names
+pca05 <- plink_pca
+colnames(pca05)[-1] <- paste0("PC", 1:(ncol(pca05) - 1))
+names(pca05)[1] <- "ind"
+nrow(pca05)
+#correct number of samples
+
+cols <- readRDS("../figures/colors/pcadmix_ESU_5_colors_2.rds")
+
+pops <- read_csv("../intermediates/pops.csv", show_col_types = FALSE) %>%
+  transmute(BGP_ID, Group)
+
+admix_groups <- fread("../intermediates/admix_output/admix_ESU_group_K5.tsv")
+
+pops.groups <- left_join(pops, admix_groups, by="BGP_ID") %>% rename(ind=BGP_ID)
+
+
+# Join PCA data
+pca.cluster <- left_join(pca05, pops.groups, by="ind")  # left_join PCA first to preserve PC columns
+
+
+rel.nr <- ggplot(pca.cluster, aes(
+    x = PC1, 
+    y = PC2, 
+    col = admix_group,
+    text = paste0(
+        "ID: ", ind, "<br>",
+        "Group: ", Group, "<br>",
+        "PC1: ", round(PC1, 4), "<br>",
+        "PC2: ", round(PC2, 4)
+    )
+)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = cols,
+                     name = "ESU Group") +
+  theme_light() +
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+rel.nr
+
+ggsave("../figures/pca/BANS_overall_PCA_K5_norel.png", width = 8.5, height = 7)
+```
+
+#### colored by ESU with gradient for location
+```{r}
+# 1) Join letters onto your per-individual table
+letters <- read.csv("../intermediates/cluster_letter_key_geo_lonlat.csv", stringsAsFactors = FALSE)
+
+# make sure the join key is Group (some files use Pop)
+if ("Pop" %in% names(letters) && !"Group" %in% names(letters)) {
+  letters <- letters %>% rename(Group = Pop)
+}
+stopifnot(all(c("Group", "cluster_letter") %in% names(letters)))
+
+pops.groups.letters <- left_join(pops.groups, letters, by = "Group") %>%
+  mutate(cluster_letter = trimws(as.character(cluster_letter)))
+
+ESUs <- paste0("ESU", 1:5)
+
+letter_owner <- pops.groups.letters %>%
+  filter(!is.na(cluster_letter), !is.na(admix_group), admix_group %in% ESUs) %>%
+  count(cluster_letter, admix_group, name = "n") %>%
+  group_by(cluster_letter) %>%
+  slice_max(n, n = 1, with_ties = FALSE) %>%   # majority ESU for that letter
+  ungroup() %>%
+  rename(owner_esu = admix_group)
+
+# (optional) inspect "mixed" letters
+# pops.groups.letters %>% count(cluster_letter, admix_group) %>% arrange(cluster_letter, desc(n))
+
+# Add the owner ESU back to each individual (so PCA tooltips can show it)
+pops.groups.letters <- pops.groups.letters %>%
+  left_join(letter_owner %>% select(cluster_letter, owner_esu), by = "cluster_letter")
+
+esu_base_cols <- cols  # named vector: ESU1..ESU5 -> hex
+
+letter_cols_df <- letter_owner %>%
+  arrange(owner_esu, cluster_letter) %>%       # stable ordering
+  group_by(owner_esu) %>%
+  group_modify(~{
+    base <- esu_base_cols[[.y$owner_esu]]
+    L <- .x$cluster_letter
+    n <- length(L)
+    shades <- colorRampPalette(c("white", base))(n + 1)[-1]
+    tibble(cluster_letter = L, col = shades)
+  }) %>%
+  ungroup()
+
+letter_cols <- setNames(letter_cols_df$col, letter_cols_df$cluster_letter)
+
+# sanity: must be unique names
+stopifnot(!any(duplicated(names(letter_cols))))
+
+# quick preview
+barplot(rep(1, length(letter_cols)),
+        col = letter_cols,
+        border = NA,
+        names.arg = names(letter_cols),
+        las = 2,
+        cex.names = 0.3)
+
+saveRDS(letter_cols, file = "../figures/colors/pcadmix_ESU_5_colors_2.rds")
+
+
+plink_pca <- read.table("../intermediates/pca/PCA_eigen/BANS.filtered.unrel.ld25-10-0.5.eigenvec",
+                        header = FALSE) %>% dplyr::select(-V2)
+eigenval <- scan("../intermediates/pca/PCA_eigen/BANS.filtered.unrel.ld25-10-0.5.eigenval")
+
+pve05 <- data.frame(PC = 1:189, pve = eigenval/sum(eigenval)*100)
+
+pca05 <- plink_pca
+colnames(pca05)[-1] <- paste0("PC", 1:(ncol(pca05) - 1))
+names(pca05)[1] <- "ind"
+
+# make sure pops.groups.letters has an 'ind' column
+pops_for_join <- pops.groups.letters
+if ("BGP_ID" %in% names(pops_for_join) && !"ind" %in% names(pops_for_join)) {
+  pops_for_join <- pops_for_join %>% rename(ind = BGP_ID)
+}
+if ("sampleID" %in% names(pops_for_join) && !"ind" %in% names(pops_for_join)) {
+  pops_for_join <- pops_for_join %>% rename(ind = sampleID)
+}
+stopifnot("ind" %in% names(pops_for_join))
+
+pca.cluster <- left_join(pca05, pops_for_join, by = "ind") %>%
+  mutate(cluster_letter = trimws(as.character(cluster_letter)))
+
+# lock palette mapping to letters we actually have
+letter_cols <- letter_cols[order(names(letter_cols))]
+
+rel.nr <- ggplot(pca.cluster, aes(
+  x = PC1, y = PC2, col = cluster_letter,
+  text = paste0(
+    "ID: ", ind, "<br>",
+    "Group: ", Group, "<br>",
+    "Individual ESU: ", admix_group, "<br>",
+    "Letter owner ESU: ", owner_esu, "<br>",
+    "PC1: ", round(PC1, 4), "<br>",
+    "PC2: ", round(PC2, 4)
+  )
+)) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = letter_cols,
+    limits = names(letter_cols),
+    drop = FALSE,
+    name = "Sampling location\nColored by ESU"
+  ) +
+  theme_light() +
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+rel.nr
+ggsave("../figures/pca/BANS_ESU_K5_PCA_norel_locationcoloring.png", width = 8.5, height = 7)
+```
+
+# GENOMICS ESU AND MIGRATION MU DELINEATION
+So the trick here is start with a base of one of the genomic delineations and then force a split between the Alaska group and the East coast. I generated a forced ESU delineation by reassigning individuals from specified sampling clusters to a new ESU and setting their existing ancestry coefficients to zero, resulting in a modified Q matrix used for downstream analyses and visualization. Basically just forcing assignment for these locations into a new group.
+
+*This chunk isn't automated* so make sure the inputs are right!
+```{r, message=FALSE, warning=FALSE}
+# Input files, the based Q file I'm going to force
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e4.run1.admix.5.Q") %>%
+  setNames(paste0("ESU", 1:5))
+
+pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>%
+  dplyr::select(-V2)
+
+colnames(pca_df)[-1] <- paste0("PC", 1:(ncol(pca_df) - 1))
+names(pca_df)[1] <- "ind"
+
+Q_tibble <- Q_tibble %>%
+  mutate(Sample = pca_df$ind)
+
+# Read groups and corresponding letters
+pops <- read_csv(
+  "../scratch/pops.csv",
+  show_col_types = FALSE
+) %>%
+  transmute(Sample = BGP_ID, Group)
+
+cluster_geo <- read_csv(
+  "../scratch/cluster_letter_key_geo_lonlat.csv",
+  show_col_types = FALSE
+) %>%
+  dplyr::select(Group, cluster_letter)
+
+# letters to force into new ESU
+letters_new_esu <- c("Q", "R", "S", "T", "O", "P")
+
+# Force the split, change the "ESU6" here to the appropriate number...
+Q_tibble_forced <- Q_tibble %>%
+  left_join(pops, by = "Sample") %>%
+  left_join(cluster_geo, by = "Group") %>%
+  mutate(
+    force_ESU = cluster_letter %in% letters_new_esu
+  ) %>%
+  mutate(
+    across(starts_with("ESU"), ~ if_else(force_ESU, 0, .x)),
+    ESU6 = if_else(force_ESU, 1, 0)
+  ) %>%
+  dplyr::select(starts_with("ESU"))
+
+Q_tibble_forced
+saveRDS(Q_tibble_forced, "../scratch/admix_output/BANS_GM6_forced_Q_tibble.RDS")
+```
+
+# FUNCTIONS
+(Note, the following functions were generated using ChatGPT based on the above written out code that I produced, interpretation of results in my own)
+## Color Pallets
+The trick here is to get the color right for the spatial ESU rather than having the numbers be the same, cause the numbers aren't consistent across space with different K values.
+```{r}
+# G4
+cols_G4 <-  c(
+  "ESU1" = "#C1839F",
+  "ESU2" = "#FF5A5F",
+  "ESU3" = "#8ACB88",
+  "ESU4" = "#FFBF46")
+barplot(
+  rep(1, length(cols_G4)),
+  col = cols_G4,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G4),
+  las = 2
+)
+saveRDS(cols_G4, "../figures/colors/CU_grouping_colors_2_G4.rds")
+
+# G5
+cols_G5 <-  c(
+  "ESU1" = "#FF5A5F",
+  "ESU2" = "#FFBF46",
+  "ESU3" = "#2589BD",
+  "ESU4" = "#C1839F",
+  "ESU5" = "#8ACB88")
+barplot(
+  rep(1, length(cols_G5)),
+  col = cols_G5,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G5),
+  las = 2
+)
+saveRDS(cols_G5, "../figures/colors/CU_grouping_colors_2_G5.rds")
+
+# GM5
+cols_GM5 <-  c(
+  "ESU1" = "#C1839F",
+  "ESU2" = "#FF5A5F",
+  "ESU3" = "#8ACB88",
+  "ESU4" = "#FFBF46",
+  "ESU5" = "#247B7B")
+barplot(
+  rep(1, length(cols_GM5)),
+  col = cols_GM5,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_GM5),
+  las = 2
+)
+saveRDS(cols_GM5, "../figures/colors/CU_grouping_colors_2_GM5.rds")
+
+# GM6
+cols_GM6 <-  c(
+  "ESU1" = "#FF5A5F",
+  "ESU2" = "#FFBF46",
+  "ESU3" = "#2589BD",
+  "ESU4" = "#C1839F",
+  "ESU5" = "#8ACB88",
+  "ESU6" = "#247B7B")
+barplot(
+  rep(1, length(cols_GM6)),
+  col = cols_GM6,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_GM6),
+  las = 2
+)
+saveRDS(cols_GM6, "../figures/colors/CU_grouping_colors_2_GM6.rds")
+```
+
+## Genoscapes
+```{r}
+source("prep_genoscape_inputs.R")
+source("build_genoscape_surfaces.R")
+
+############# PICK A K VALUE #############
+scheme <- "GM6"
+K <- 6
+# read in data, either raw or forced
+#Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e4.run1.admix.5.Q") %>%
+#  setNames(paste0("ESU", 1:K))
+Q_tibble <- readRDS("../scratch/admix_output/BANS_GM6_forced_Q_tibble.RDS")
+
+
+out_plot_genoscape_png <- paste0("BANS_genoscape_",scheme,"_overall.png")
+out_plot_genoscape_pdf <- paste0("BANS_genoscape_",scheme,"_overall.pdf")
+genoscape_path <- "../figures/genoscape_plots/"
+genoscape_brick_out <- paste0("../scratch/genoscape_output/BANS_overall_genoscape_brick_pcadmix_",scheme,".tif")
+cols <- readRDS(paste0("../figures/colors/CU_grouping_colors_2_",scheme,".rds"))
+barplot(rep(1, length(cols)), col = cols, border = NA, axes = FALSE, space = 0, names.arg = names(cols), las = 2)
+
+############# OTHER INPUT FILES #############
+pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE)
+
+all <- read_csv("../../../raw_data/BANS_all_sample_data_shifted.csv")
+
+############# MAKE Q_TIBBLE #############
+prep_out <- prep_genoscape_inputs(
+  Q_tibble = Q_tibble,
+  pca_df = pca_df,
+  all = all
+)
+
+Q_tibble <- prep_out$Q_tibble
+Q_matrix <- prep_out$Q_matrix
+long_lat_matrix <- prep_out$long_lat_matrix
+LatLong_tibble <- prep_out$LatLong_tibble
+K <- prep_out$K
+bad <- prep_out$bad
+
+############# GET BASE MAP AND RANGE #############
+map <- ne_states(
+  country = c("United States of America", "Canada"),
+  returnclass = "sf"
+)
+
+na_union <- st_union(map)
+
+breeding.sf <- st_read("../../../raw_data/spatial_files/banswa_range_2023.gpkg") %>%
+  filter(season == "breeding") %>%
+  st_transform(crs(map))
+
+breeding_na <- st_intersection(breeding.sf, na_union)
+
+############# BUILD THE GENOSCAPE #############
+surf_out <- build_genoscape_surfaces(
+  Q_matrix = Q_matrix,
+  long_lat_matrix = long_lat_matrix,
+  breeding_na = breeding_na,
+  cols = cols,
+  K = K,
+  brick_names = names(Q_tibble)[-(K + 1)],
+  out_tif = "../scratch/genoscape_output/BANS_overall_genoscape_brick_pcadmix_G4.tif"
+)
+
+genoscape_brick <- surf_out$genoscape_brick
+writeRaster(genoscape_brick, genoscape_brick_out, overwrite=TRUE)
+genoscape_projected <- surf_out$genoscape_projected
+
+coords_sf <- st_as_sf(
+  LatLong_tibble,
+  coords = c("Long", "Lat"),
+  crs = 4326   # WGS84 (lon/lat)
+)
+
+# then we want to get the sample points as coded by letter, which I established previously
+cluster_geo <- read.csv("../scratch/cluster_letter_key_geo_lonlat.csv")
+
+## make sf points from lon/lat
+cluster_geo_sf <- st_as_sf(
+  cluster_geo,
+  coords = c("cen_lon", "cen_lat"),
+  crs = 4326,      # lon/lat
+  remove = FALSE
+)
+
+## transform to your map CRS (lamproj must be a valid CRS/proj string)
+cluster_geo_sf <- st_transform(cluster_geo_sf, st_crs(lamproj))
+
+genoscape <- ggplot() +
+  ggspatial::layer_spatial(genoscape_projected) +
+  geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = ocean, fill = "#bddbe6") +
+  geom_sf(data = lakes, fill = "#bddbe6") + #bddbe6
+  #geom_spatial_point(data = long_lat_tibble, mapping = aes(x = Long, y = Lat), size=1, alpha = 0.7) + 
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1)) +
+  geom_sf(data=cluster_geo_sf)+
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)+
+  geom_label_repel(
+    data = cluster_geo_sf,
+    aes(label = cluster_letter, geometry = geometry),
+    stat = "sf_coordinates",
+    size = 2.5,            # increase text size (try 2.2–3.0
+    fontface = "bold",
+    label.size = .2,
+    fill = "white",
+    alpha = 1,
+    box.padding = 0.25,
+    point.padding = 0.2,
+    segment.color = "black",
+    segment.size = 0.5,
+    min.segment.length = 0
+)
+genoscape
+
+############# SAVE THE GENOSCAPE #############
+ggsave(plot=genoscape, path=genoscape_path, filename=out_plot_genoscape_png, width = 7, height = 4.5)
+
+pdf(paste0(genoscape_path,out_plot_genoscape_pdf))
+print(genoscape)
+dev.off()
+```
+
+## Admixture plots
+```{r}
+source("make_admix_barplot_and_assignments.R")
+
+######## G4/5 INPUT #########
+K <-  5
+out_plot_admix <- "BANS_admix_overall_alpha0_G5_letters.png"
+admix_plot_path <- "../figures/admix_plots/"
+
+out_group_admix <- "BANS_admix_grouping_G5.tsv"
+admix_group_path <- "../scratch/admix_output/"
+
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e4.run1.admix.5.Q") %>%
+  setNames(paste0("ESU", 1:K))
+cols <- readRDS("../figures/colors/CU_grouping_colors_2_G5.rds")
+
+######## GM5/6 INPUT #########
+K <-  6
+out_plot_admix <- "BANS_admix_overall_alpha0_GM6_letters.png"
+admix_plot_path <- "../figures/admix_plots/"
+
+out_group_admix <- "BANS_admix_grouping_GM6.tsv"
+admix_group_path <- "../scratch/admix_output/"
+
+Q_tibble <- readRDS("../scratch/admix_output/BANS_GM6_forced_Q_tibble.RDS")
+cols <- readRDS("../figures/colors/CU_grouping_colors_2_GM6.rds")
+
+######## RUNNING FUNCTION ########
+pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE)
+
+pops <- readr::read_csv("../scratch/pops.csv", show_col_types = FALSE)
+letter_key <- readr::read_csv("../scratch/cluster_letter_key_geo_lonlat.csv", show_col_types = FALSE)
+
+admix_out <- make_admix_barplot_and_assignments(
+  K_target = K,
+  cols = cols,
+  Q_tibble = Q_tibble,
+  pca_df = pca_df,
+  pops = pops,
+  letter_key = letter_key,
+  out_plot = "../figures/admix_plots/BANS_admix_overall_alpha0_G4_letters.png",
+  out_assignments = "../scratch/admix_output/admix_ESU_group_G4.tsv"
+)
+
+K_plot <- admix_out$K_plot
+admix_group <- admix_out$admix_group
+q_long <- admix_out$q_long
+
+# This plot is meaningless for the GM ones but easiest to just write it out anyway
+K_plot
+ggsave(path=admix_path, filename=out_plot_admix, plot=K_plot, width = 10, height = 2.2, units = "in", dpi = 300, bg = "white")
+
+write_tsv(admix_group, paste0(admix_group_path,out_group_admix))
+```
+
+## PCA plots
+```{r}
+source("plot_pca_admix_solid.R")
+
+out_plot_pca1 <- "../figures/pca_plots/BANS_GM6_PCA_norel_ESUcoloring.png"
+out_plot_pca2 <- "../figures/pca_plots/BANS_GM6_PCA_norel_ESUcoloring.png"
+out_letters_cols <- "../figures/colors/CU_grouping_letter_colors_GM6.rds"
+
+admix_groups <- data.table::fread("../scratch/admix_output/BANS_admix_grouping_GM6.tsv")
+cols <- readRDS("../figures/colors/CU_grouping_colors_2_GM6.rds")
+
+plink_pca <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE)
+pops <- readr::read_csv("../scratch/pops.csv", show_col_types = FALSE)
+eigenval <- scan("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenval")
+
+solid_out <- plot_pca_admix_solid(
+  plink_pca = plink_pca,
+  eigenval = eigenval,
+  cols = cols,
+  pops = pops,
+  admix_groups = admix_groups,
+  out_plot = out_plot_pca1
+)
+
+solid_out$pca_plot
+
+########## GRADIENT. #########
+source("plot_pca_location_gradient.R")
+
+letters <- read.csv("../scratch/cluster_letter_key_geo_lonlat.csv", stringsAsFactors = FALSE)
+
+grad_out <- plot_pca_location_gradient(
+  plink_pca = plink_pca,
+  eigenval = eigenval,
+  cols = cols,
+  pops = pops,
+  admix_groups = admix_groups,
+  letters = letters,
+  out_plot = out_plot_pca2, 
+  out_letter_cols_rds = out_letters_cols
+)
+
+grad_out$pca_plot
+```
+
+# GENOSCAPE SHAPE FILES
+I want to create shapefiles for each genetic group to get demographic data for, either from ebird population trends or BBS. Matt has function for this in Mignette, so install and load that package if you haven't already.
+```{r, message = FALSE, warning = FALSE}
+library(mignette)
+
+lamproj <- "+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+
+out_polygon <- "../outputs/BANS_CU_polygons_thresh45_GM6.shp"
+genoscape_brick <- raster::brick("../scratch/genoscape_output/BANS_overall_genoscape_brick_pcadmix_GM6.tif")
+names(genoscape_brick) <- paste0("ESU", 1:6)
+
+crs(genoscape_brick) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+genoscape_brick_spat <- terra::rast(genoscape_brick)
+genoscape_brick_proj <- terra::project(genoscape_brick_spat, lamproj, method = "near")
+
+genoscape_polygons <- mignette::scape_to_shape(x = genoscape_brick_proj, 
+                                               prob_threshold = 0.45,
+                                               d = 100,
+                                               f = 100,
+                                               s = 3)
+
+polygons <- ggplot() +
+  ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
+  #geom_sf(data = breeding_range, fill = NA, linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  #geom_sf(data = ocean, fill = "#bddbe6") +
+  #geom_sf(data = lakes, fill = "#bddbe6") +
+  #geom_spatial_point(data = long_lat_tibble, mapping = aes(x = Long, y = Lat), size=2) +
+  theme_void() + 
+  #theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1)) +
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)  # expand = FALSE means put the axes right at the xlim and ylim
+
+polygons
+st_write(genoscape_polygons, out_polygon, delete_dsn = TRUE)
+```
