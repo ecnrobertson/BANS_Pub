@@ -6,6 +6,7 @@
 #01.fastq_processing
 analysis/01.fastq_processing/intermediates/pca_inputs
 analysis/01.fastq_processing/intermediates/pca_outputs
+analysis/01.fastq_processing/snakemake/GCA*
 
 #03.delineate_ESUs
 analysis/03.delineate_ESUs/scratch/admix_output
