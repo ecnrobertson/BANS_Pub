@@ -1,0 +1,647 @@
+---
+title: "06.better_results_figures"
+output: html_document
+---
+
+# LIBRARIES
+```{r, message=FALSE, warning=FALSE}
+library(ncdf4)
+library(terra)
+library(raster)
+library(dplyr)
+library(purrr)
+library(data.table)
+library(ebirdst)
+library(fields)
+library(rnaturalearth)
+library(sf)
+library(ggplot2)
+library(ggrepel)
+library(mgcv)
+library(gratia)
+library(tidyterra)
+library(ggnewscale)
+library(patchwork)
+```
+
+# INTRO
+This is just a script from making some specific figures for talks and or final manuscript stuff. I'll update it with specific notes for the figure numbers and such based on where things end up in the manuscript...
+
+# ESU labeling and color updates
+Options for Names:
+    "Interior West",
+    "Mackenzie Basin",
+    "Pacific Coastal",
+    "Newfoundland",
+    "Alaska–Northwest",
+    "East Coastal"
+        "Western United States",
+"Alaksa-East Coastal",
+```{r}
+genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_G5.shp")
+
+cols <- readRDS("../../03.delineate_ESUs/figures/colors/CU_grouping_colors_2_G5.rds")
+
+genoscape_reference <- ggplot() +
+  ggspatial::layer_spatial(
+  genoscape_polygons,
+  aes(fill  = factor(Cluster))) +
+scale_fill_manual(
+  values = cols,
+  breaks = names(cols),
+  name = "ESU"
+)
+genoscape_reference
+
+# "Interior West",
+#     "Mackenzie Basin",
+#     "Pacific Coastal",
+#     "Newfoundland",
+#     "Alaska–Northwest",
+#     "East Coastal"
+#         "Western United States",
+# "Alaska-East Coastal",
+        
+CU_name_ref <- tibble(
+  ESU = c("ESU1", "ESU2", "ESU3", "ESU4", "ESU5"),
+  Name = c(
+    "Interior West",
+    "Mackenzie Basin",
+    "Pacific Coastal",
+    "Newfoundland",
+    "Alaska-East Coastal")
+)
+
+cols_fullnames <- cols
+names(cols_fullnames) <- CU_name_ref$Name
+
+saveRDS(cols_fullnames, "../colors/CU_grouping_colors_2_G5_fullnames.rds")
+
+CU_name_ref %>% write_csv("../colors/CU_G5_name_ref.csv")
+```
+
+# TREND RASTER FIGURES
+```{r}
+trends_raster <- rast("../scratch/spatial_predictors/eBird_trends_BANS_proj4326.tif")
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+# get shapefiles from natural earth
+coastlines <- ne_download(scale = 10, type = "coastline", category = "physical", returnclass = "sf")
+countries <- ne_download(scale = 10, type = "admin_0_boundary_lines_land", category = "cultural", returnclass = "sf")
+states <- ne_download(scale = 10, type = "admin_1_states_provinces_lines", category = "cultural", returnclass = "sf")
+ocean <- ne_download(scale = 10, type = "ocean", category = "physical", returnclass = "sf")
+lakes <- ne_download(scale = 10, type = "lakes", category = "physical", returnclass = "sf")
+```
+
+## nicer base trend map
+```{r}
+map <- ne_states(country = c("United States of America", "Canada"), 
+                 returnclass = 'sf')
+na_union <- st_union(map)
+
+#BANS breeding range
+breeding.sf <- st_read("../../../raw_data/spatial_files/banswa_range_2023.gpkg") %>% filter(season=="breeding")  %>% st_transform(crs(map))
+
+#clip BANS range to just NA and make a single, clean polygon
+breeding_na <- st_intersection(breeding.sf, na_union)
+lamproj <- "+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+
+bb <- st_bbox(breeding_na) %>% st_transform(lamproj)
+saveRDS(bb,"../figures/bounding_box_breeedingNA.rds")
+
+trends_projected <- terra::project(trends_raster, lamproj, method = "near")
+
+colors <- colorRampPalette(brewer.pal(11, "RdBu"))(7)
+barplot(
+  rep(1, length(colors)),
+  col = colors,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(colors),
+  las = 2
+)
+
+trends_plot <- ggplot() +
+  tidyterra::geom_spatraster(data = trends_projected, na.rm = TRUE) +
+  scale_fill_gradient2(
+  low = "#67001F",
+  mid = "white",
+  high = "#053061",
+  midpoint = 0,
+  na.value = NA,
+  name = "Trend"
+)+
+  geom_sf(data = breeding_na, fill = "NA", linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = ocean, fill = "#bddbe6") +
+  geom_sf(data = lakes, fill = "#bddbe6") +
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1))+
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)
+trends_plot
+ggsave(plot=trends_plot,"../figures_output/BANS_trends_plot_ggplot.png")
+```
+
+## genoscape polygons for overlap
+```{r}
+scheme <- "GM6"
+
+genoscape_polygons <- st_read(paste0("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_",scheme,".shp"))
+CU_names_ref <- read.csv(paste0("../colors/CU_",scheme,"_name_ref.csv"))
+
+genoscape_polygons$Cluster <- factor(
+  genoscape_polygons$Cluster,
+  levels = CU_names_ref$ESU,
+  labels = CU_names_ref$Name
+)
+
+cols <- readRDS(paste0("../colors/CU_grouping_colors_2_",scheme,"_fullnames.rds"))
+
+out_overlap_plot <- paste0("../figures_output/trends/BANS_trends_plot_ESU_",scheme,"_overlay_ggplot_colored.png")
+```
+
+```{r}
+trends_plot_overlaid <- ggplot() +
+  tidyterra::geom_spatraster(data = trends_projected, na.rm = TRUE) +
+  scale_fill_gradient2(low = "#CA4741", mid = "white", high = "#3784BB", 
+                       midpoint = 0,na.value =NA, name = "Trend")+
+  geom_sf(data = breeding_na, fill = "NA", linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = ocean, fill = "#bddbe6") +
+  geom_sf(data = lakes, fill = "#bddbe6") +
+  new_scale_fill()+
+  ggspatial::layer_spatial(
+  genoscape_polygons,
+  aes(fill  = factor(Cluster)),
+  alpha=.25
+) +
+scale_fill_manual(
+  values = cols,
+  breaks = names(cols),
+  name = "ESU" 
+)+
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1))+
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)
+trends_plot_overlaid
+ggsave(plot=trends_plot_overlaid, out_overlap_plot)
+```
+
+# MODEL FIGURES
+(Note, functions following were based on code I wrote and used ChatGPT to make into full functions, all interpretations are my own)
+## partial effect plots
+```{r}
+schemes <- c("G4", "G5", "GM5", "GM6")
+
+for (scheme in schemes){
+
+CU_names_ref <- read.csv(paste0("../colors/CU_",scheme,"_name_ref.csv"))
+cols <- readRDS(paste0("../colors/CU_grouping_colors_2_",scheme,"_fullnames.rds"))
+K <- length(cols)
+
+data <- read.csv(paste0("../../04.predictors_of_decline/scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_",scheme,"_threshold45.csv"))
+
+clean.data <- data %>% filter(!is.na(ESU))
+
+clean.data.names <- left_join(clean.data, CU_names_ref, by="ESU")
+
+clim_vars <- c("ppt", "tmax", "soil", "tmin", "ws")
+
+for (var in clim_vars){
+  modGS <- readRDS(paste0("../../04.predictors_of_decline/outputs/GAM_outputs/function_out/",scheme,"/modGS_",var,".rds"))
+  sm_dat <- smooth_estimates(modGS,
+                           smooth = paste0("s(",var,"_june_delta,ESU)")
+                           )
+  sm_dat.names <- left_join(sm_dat, CU_names_ref, by="ESU")
+  
+  p <- ggplot(sm_dat.names, aes(x = .data[[paste0(var, "_june_delta")]],
+                   y = .estimate,
+                   colour = Name)) +
+  geom_line() +
+  facet_wrap(~ Name, nrow=1) +
+  scale_colour_manual(values = cols) +
+  theme_classic()+
+  theme(
+  strip.text = element_blank(),
+  strip.background = element_blank(),
+  legend.position = "none",
+  axis.title.y = element_text(size = 7),
+  axis.text.x = element_text(size=8, 
+                             angle =90,
+                             vjust = 0.5,
+                             hjust = 1))+
+  geom_hline(yintercept = 0, linetype = "dashed")+
+  geom_vline(xintercept = 0, linetype = "dashed")+
+  xlab(paste0("Change in ",var))+
+  ylab(expression("Partial effect on " ~ Delta ~ "Abundance"))
+  
+ggsave(
+    filename = paste0(
+      "../figures_output/partial_effects/",scheme,"/BANS_",
+      var, "_GAM_", scheme, "_partialeffect.png"
+    ),
+    plot = p,
+    height = 2,
+    width = 6
+    )
+}
+}
+```
+
+```{r}
+source("plot_partial_effects_by_scheme.R")
+
+# run for both modGS and modS
+plot_partial_effects_by_scheme(
+  schemes = c("G4", "G5", "GM5", "GM6"),
+  model = "modS",
+  clim_vars = c("ppt", "tmax", "soil", "tmin", "ws")
+)
+```
+
+## prediction plots
+### modG
+```{r}
+source("plot_modG_predictions_all_schemes.R")
+pred_out <- plot_modG_predictions_all_schemes(
+  schemes = c("G4", "G5", "GM5", "GM6"),
+  focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
+  plot_dims = list(width = 7, height = 4),
+  x_labels = c(
+    tmax_june_delta = "Change in Max Temperature",
+    ppt_june_delta = "Change in Precipitation",
+    soil_june_delta = "Change in Soil Moisture",
+    ws_june_delta = "Change in Wind Speed",
+    tmin_june_delta = "Change in Min Temperature"
+  ),
+  include_pop_line = TRUE
+)
+
+pred_out$G4$results_by_var$tmax_june_delta$plot
+pred_out$GM6$results_by_var$ppt_june_delta$plot
+```
+```{r}
+schemes <- names(pred_out)
+
+for (scheme in schemes) {
+  
+  # grab all plot objects for this scheme
+  plot_list <- lapply(pred_out[[scheme]]$results_by_var, function(x) x$plot)
+  
+  # combine into one figure and collect a single legend
+  p_combined <- wrap_plots(plot_list, ncol = 5, guides = "collect") &
+    theme(legend.position = "bottom")
+  
+  # save into the corresponding scheme folder
+  ggsave(
+    filename = file.path(
+      "../figures_output/modG_predictions",
+      scheme,
+      paste0("modG_allvars_predictions_", scheme, ".png")
+    ),
+    plot = p_combined,
+    width = 25,
+    height = 8
+  )
+}
+```
+
+### modGS
+```{r}
+source("plot_modS_modGS_predictions_all_schemes.R")
+
+pred_out_modGS <- plot_modS_modGS_predictions_all_schemes(
+  schemes = c("G4", "G5", "GM5", "GM6"),
+  model = "modGS",
+  focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
+  plot_dims = list(width = 7, height = 4),
+  x_labels = c(
+    tmax_june_delta = "Change in Max Temperature",
+    ppt_june_delta = "Change in Precipitation",
+    soil_june_delta = "Change in Soil Moisture",
+    ws_june_delta = "Change in Wind Speed",
+    tmin_june_delta = "Change in Min Temperature"
+  )
+)
+
+schemes <- names(pred_out_modGS)
+clim_vars <- c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta")
+
+for (scheme in schemes) {
+  
+  plot_list <- lapply(clim_vars, function(v) {
+    pred_out_modGS[[scheme]]$results_by_var[[v]]$plot
+  })
+  
+  p_combined <- patchwork::wrap_plots(plot_list, ncol = 5, guides = "collect") &
+    ggplot2::theme(legend.position = "bottom")
+  
+  ggplot2::ggsave(
+    filename = file.path(
+      "../figures_output/modGS_predictions",
+      scheme,
+      paste0("modGS_allvars_predictions_", scheme, ".png")
+    ),
+    plot = p_combined,
+    width = 25,
+    height = 8
+  )
+}
+```
+
+### modS
+```{r}
+source("plot_modS_modGS_predictions_all_schemes.R")
+
+pred_out_modS <- plot_modS_modGS_predictions_all_schemes(
+  schemes = c("G4", "G5", "GM5", "GM6"),
+  model = "modS",
+  focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
+  plot_dims = list(width = 7, height = 4),
+  x_labels = c(
+    tmax_june_delta = "Change in Max Temperature",
+    ppt_june_delta = "Change in Precipitation",
+    soil_june_delta = "Change in Soil Moisture",
+    ws_june_delta = "Change in Wind Speed",
+    tmin_june_delta = "Change in Min Temperature"
+  )
+)
+
+schemes <- names(pred_out_modS)
+clim_vars <- c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta")
+
+for (scheme in schemes) {
+  
+  plot_list <- lapply(clim_vars, function(v) {
+    pred_out_modS[[scheme]]$results_by_var[[v]]$plot
+  })
+  
+  p_combined <- patchwork::wrap_plots(plot_list, ncol = 5, guides = "collect") &
+    ggplot2::theme(legend.position = "bottom")
+  
+  ggplot2::ggsave(
+    filename = file.path(
+      "../figures_output/modS_predictions",
+      scheme,
+      paste0("modS_allvars_predictions_", scheme, ".png")
+    ),
+    plot = p_combined,
+    width = 25,
+    height = 8
+  )
+}
+```
+
+
+
+# GENOMIC OFFSET FIGURES
+## GO PER ESU Plots
+```{r}
+library(sf)
+RDA_proj_offset <- readRDS("RDA_proj_offset_all_loci_table.rds")
+ESU6_polygons <- st_read("../05.predictors_of_decline/BANS_ESU_K6_polygons_update_thresh45.shp")
+ESU6_polygons$Cluster <- factor(
+  ESU6_polygons$Cluster,
+  levels = c("ESU1","ESU2","ESU3","ESU4","ESU5","ESU6"),
+  labels = c(
+    "Interior West",
+    "Mackenzie Basin",
+    "Pacific Coastal",
+    "Newfoundland",
+    "Alaska–Northwest",
+    "East Coastal"
+  )
+)
+
+pts <- st_as_sf(
+  RDA_proj_offset,
+  coords = c("x", "y"),
+  crs = 4326,
+  remove = FALSE
+)
+
+esu <- st_transform(ESU6_polygons, 4326)
+
+# 3) join: assigns each point an ESU id
+pts_esu <- st_join(pts, esu[, c("Cluster")], join = st_within, left = FALSE)
+saveRDS(pts_esu, "pts_ESU6.rds")
+
+# 4) summarize to ESU-level offset
+esu_offset <- pts_esu %>%
+  st_drop_geometry() %>%
+  group_by(Cluster, Date) %>%
+  summarize(
+    n_cells = n(),
+    mean_offset   = mean(Global_offset, na.rm = TRUE),
+    median_offset = median(Global_offset, na.rm = TRUE),
+    p05 = quantile(Global_offset, 0.05, na.rm = TRUE),
+    p95 = quantile(Global_offset, 0.95, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+esu_offset
+saveRDS(esu_offset, "ESU6_offset_stats.rds")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggdist)
+
+names(cols) <- c(
+  "Interior West",
+  "Mackenzie Basin",
+  "Pacific Coastal",
+  "Newfoundland",
+  "Alaska–Northwest",
+  "East Coastal"
+) 
+# per-cell offsets (NOT summarized)
+cells <- readRDS("pts_ESU6.rds") %>%
+  st_drop_geometry() %>%
+  mutate(Cluster = factor(Cluster, levels = names(cols)))  # keep your ESU order
+
+# if you want only a specific future period, filter Date here:
+# cells <- cells %>% filter(Date == "2068-2088")  # or whatever your Date values are
+set.seed(5)  # for reproducibility
+
+cells_subsample_1m <- cells[
+  sample.int(nrow(cells), 1e6),
+]
+
+raincloud <- ggplot(cells, aes(x = Cluster, y = Global_offset, color = Cluster, fill = Cluster)) +
+  # half density "trace" (one-sided)
+  stat_halfeye(
+    side = "right",
+    adjust = 2,          # try 1.2–2.5
+    width = 1.3,
+    alpha = 0.75,
+    .width = 0,            # <-- removes interval/box-looking part
+    point_colour = NA,
+    position = position_nudge(x = 0.1)  # <-- shifts halfeye right
+  ) +
+  # boxplot on top
+  geom_boxplot(
+    width = 0.18,
+    outlier.shape = NA,
+    alpha = 0.75,
+    color = "black",
+    position = position_nudge(x = -0.05),
+    linewidth=0.4
+  ) +
+  scale_fill_manual(values = cols) +
+  scale_color_manual(values = cols) +
+  labs(
+    title = "Within-ESU Distribution of Genomic Offset | 2071–2100",
+    x = NULL,
+    y = "Genomic Offset"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(size = 8, angle = 90, hjust = 1),
+    legend.position = "none"
+  )
+
+#raincloud
+ggsave(plot=raincloud, "results/GO_per_ESU_raincloud.png", width = 6, height = 4.5, dpi = 300)
+
+######### MORE SPACE VERSION
+esu_order <- c(
+  "Interior West",
+  "Pacific Coastal",
+  "Newfoundland",
+  "Alaska–Northwest",
+  "East Coastal",
+  "Mackenzie Basin"
+)
+
+cells <- cells %>%
+  mutate(Cluster = factor(Cluster, levels = esu_order))
+
+# 2) optional: per-ESU "caps" so the spiky ones don't spill
+halfeye_widths <- c(
+  "Interior West"   = .5,
+  "Pacific Coastal" = .5,
+  "Newfoundland"    = .5,   # shrink these two
+  "Alaska–Northwest"= .5,
+  "East Coastal"    = .5,
+  "Mackenzie Basin" = .5
+)
+
+p <- ggplot(cells, aes(x = Cluster, y = Global_offset, fill = Cluster)) +
+  scale_fill_manual(values = cols) +
+  scale_x_discrete(expand = expansion(mult = c(0.02, 0.02))) +
+  labs(
+    title = "Within-ESU Distribution of Genomic Offset | 2071–2100",
+    x = NULL,
+    y = "Genomic Offset"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "none"
+  )
+for (esu in esu_order) {
+  d_esu <- filter(cells, Cluster == esu)
+
+  p <- p +
+    stat_halfeye(
+      data = d_esu,
+      side = "right",
+      adjust = 2,
+      width = unname(halfeye_widths[esu]),
+      alpha = 0.75,
+      .width = 0,
+      point_colour = NA,
+      position = position_nudge(x = 0.30)
+    ) +
+    geom_boxplot(
+      data = d_esu,
+      width = 0.35,
+      outlier.shape = NA,
+      alpha = 0.75,
+      color = "black",
+      linewidth = 0.4,
+      position = position_nudge(x = 0.10)
+    )
+}
+
+p
+
+
+ggsave(plot=p, "results/GO_per_ESU_raincloud_wide.png", width = 8, height = 2)
+```
+
+```{r}
+esu_offset <- readRDS("ESU6_offset_stats.rds")
+esu_long <- esu_offset %>%
+  pivot_longer(
+    cols = c(mean_offset, median_offset),
+    names_to = "Metric",
+    values_to = "Offset"
+  )
+
+
+cols <- readRDS("../02.5.delineate_ESUs/figures/colors/pcadmix_ESU_6_colors_2.rds")
+names(cols) <- c(
+  "Interior West",
+  "Mackenzie Basin",
+  "Pacific Coastal",
+  "Newfoundland",
+  "Alaska–Northwest",
+  "East Coastal"
+) 
+
+ggplot(esu_offset, aes(x = Cluster, y = mean_offset, color=Cluster)) +
+  geom_linerange(aes(ymin = p05, ymax = p95),
+                 linewidth = 1.1,
+                 color = "gray50") +
+  geom_point(size = 3) +
+  theme_bw(base_size = 12) +
+  scale_color_manual(values=cols)+
+  labs(
+    title = "Within-ESU Distribution of Genomic Offset | 2071-2100",
+    subtitle = "Points = mean, bars = 5th–95th percentile",
+    y = "Genomic Offset",
+    x = "ESU"
+  )+
+  theme(axis.text.x = element_text(size=8, 
+                             angle =45,
+                             hjust = 1),
+        legend.position = "none")
+ggsave("results/GO_per_ESU_mean_bar.png")
+```
+
+```{r}
+ggplot(
+  pts_esu,
+  aes(x = Cluster, y = Global_offset)
+) +
+  geom_violin(outlier.size = 0.2) +
+  facet_wrap(~ Date) +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "Distribution of Genomic Offset by ESU",
+    y = "Genomic Offset",
+    x = "Evolutionarily Significant Unit"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid = element_blank(),
+    legend.position = "none"
+  )
+ggsave("results/GO_per_ESU_mean_bar.png")
+```
