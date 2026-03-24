@@ -1,0 +1,83 @@
+---
+title: "05.1.spatial_data_wrangling"
+output: html_document
+date: "2026-03-23"
+author: "Erica Robertson"
+---
+
+# LIBRARIES
+```{r, message=F}
+library(sp)
+library(terra)
+library(tidyverse)
+library(sf)
+library(raster)
+library(data.table)
+#devtools:::install_github("gearslaboratory/gdalUtils") # Install gdalUtils from GitHub
+#library(gdalUtils)
+#library(rgdal)
+```
+
+# INTRODUCTION
+
+# CHELSA ENVIRONMENTAL DATA
+```{r}
+# Base URL for CHELSA bioclim data
+base_url <- "https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/bioclim/"
+
+# Create empty list to store rasters
+bio_list <- list()
+
+# Loop through bio1 to bio19
+for (i in 1:19) {
+  cat("Downloading bio", i, "...\n")
+  
+  # Format bio number with leading zero (01, 02, etc.)
+  bio_num <- sprintf("%02d", i)
+  
+  # Construct URL
+  bio_url <- paste0("/vsicurl/", base_url, "bio", bio_num, "/1981-2010/CHELSA_bio", bio_num, "_1981-2010_V.2.1.tif")
+  
+  # Load raster
+  bio_list[[i]] <- rast(bio_url)
+}
+
+# Stack all bio variables
+bio_stack <- rast(bio_list)
+
+# Individual data
+all <- read_csv("../../../raw_data/BANS_all_sample_data_shifted.csv")
+
+samples <- read.csv("../../03.delineate_ESUs/scratch/BANS_unrel_sample_list_short.txt") %>% rename(BGP_ID=IID)
+
+ind_filtered <- all %>% 
+  filter(BGP_ID %in% samples$BGP_ID)
+
+meta <- ind_filtered %>%
+  dplyr::select(BGP_ID, Long, Lat, State, CityTown)
+
+# Your coordinates
+coords <- meta %>% dplyr::select(BGP_ID, Long, Lat)
+
+sites <- st_as_sf(coords, coords = c("Long", "Lat"), crs = "EPSG:4326")
+crs(sites)==crs(bio_stack[[1]])
+buffers <- st_buffer(sites, dist = 2000)
+
+extracted <- terra::extract(bio_stack, buffers, fun="mean")
+extracted.xy <- cbind(coords, extracted)
+
+env_data <- extracted.xy %>%
+  rename_with(~ str_replace_all(., "CHELSA_|_1981-2010_V.2.1", ""))
+
+env_data %>% write.table("../scratch/BANS.CHELSA.txt",
+              row.names = FALSE, quote = FALSE, sep = "\t")
+```
+
+
+```{r}
+## save worldclim
+meta.env <- read.delim("../scratch/BANS.CHELSA.txt")
+left_join(meta.env %>% dplyr::select(-ID), extracted.xy %>% dplyr::select(-Long,-Lat, -ID), by="BGP_ID") %>%
+  write.table("../scratch/BANS.CHELSA.landscape.txt",
+              row.names = FALSE, quote = FALSE, sep = "\t")
+```
