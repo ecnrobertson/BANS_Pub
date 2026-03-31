@@ -31,7 +31,7 @@ pred.scale <- as.data.frame(pred.scale)
 rownames(pred.scale) <- pred$BGP_ID
 
 #with the 1mil subset
-genotypes <- fread("subsample_noheader.raw")
+genotypes <- fread("subsampled_noheader.raw")
 genotypes.filt <- genotypes %>% filter(genotypes$FID %in% pred$BGP_ID)
 genotypes.clean <- genotypes.filt[,-(1:6)]
 rownames(genotypes.clean) <- genotypes.filt$FID 
