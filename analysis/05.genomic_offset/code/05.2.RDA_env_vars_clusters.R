@@ -3,7 +3,7 @@
 # rsync -avzP /Users/ericarobertson/Desktop/BANS_adaptive_units/analysis/03.GEA/Bans_env_pop.txt ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/data/
 # In data/
 # Bans_env_pop.txt
-# BANS.unrel_ind.imputed4.1_noheader.raw
+# subsampled_noheader.raw
 
 setwd("../BANS_Pub/analysis/05.genomic_offset/")
 ##### Libraries #####
@@ -13,7 +13,6 @@ library(data.table)
 
 ##### Running Foward Selection #####
 unrel_ind <- fread("data/sample_unrel_short.txt", header=F) %>% rename(IID=V1)
-unrel_ind <- samp_unrel
 env <- fread("data/Bans_envonly_pop.txt") %>% filter(BGP_ID %in% unrel_ind$IID)
 print(nrow(env))
 

@@ -155,9 +155,9 @@ BIO15 — precipitation variability
 # ACTUAL SBATCH SCRIPT
 ```{bash, label="run_var_sel.sbatch"}
 #!/bin/bash
-#SBATCH --job-name=RDA
-#SBATCH --output=RDA.%j.out
-#SBATCH --error=RDA.%j.err
+#SBATCH --job-name=varsel1mil
+#SBATCH --output=varsel1mil.%j.out
+#SBATCH --error=varsel1mil.%j.err
 #SBATCH -t 8:00:00
 #SBATCH -p amilan
 #SBATCH --qos=normal
