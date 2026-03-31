@@ -15,14 +15,14 @@ library(data.table)
 unrel_ind <- fread("data/sample_unrel_short.txt", header=F) %>% rename(IID=V1)
 unrel_ind <- samp_unrel
 env <- fread("data/Bans_envonly_pop.txt") %>% filter(BGP_ID %in% unrel_ind$IID)
-env <- fread("scratch/Bans_envonly_pop.txt") %>% filter(BGP_ID %in% unrel_ind$IID)
 print(nrow(env))
 
 long_lat<-env %>% dplyr::select(Long,Lat)
 
 #skipping the last column which doesn't have any values and biologically unimportant lc vars
 pred <- env
-pred.vars <- colnames(pred[,6:24]) 
+# pred.vars <- colnames(pred[,6:24]) 
+pred.vars <- c("bio01", "bio05", "bio06", "bio10", "bio12", "bio18", "bio04", "bio15")
 
 print(pred.vars)
 #scaling and centering them
@@ -41,10 +41,13 @@ bans.mod0 <- rda(genotypes.clean  ~ 1, pred.scale) # Model with intercept only, 
 
 #all landcover
 #all variables
-bans.rda.vars <- rda(genotypes.clean ~ bio01 + bio02 + bio03 + bio04 +
-                       bio05 + bio06 + bio07 + bio08 + bio09 + bio10 +
-                       bio13 + bio14 + bio15 + bio16 + bio17 + bio18 +
-                       bio19, pred.scale)
+# bans.rda.vars <- rda(genotypes.clean ~ bio01 + bio02 + bio03 + bio04 +
+#                        bio05 + bio06 + bio07 + bio08 + bio09 + bio10 +
+#                        bio13 + bio14 + bio15 + bio16 + bio17 + bio18 +
+#                        bio19, pred.scale)
+bans.rda.vars <- rda(genotypes.clean ~ bio01 + bio05 + bio06 +
+                       bio10 + bio12 + bio18 + bio04 + bio15,
+                     pred.scale)
 
 print(RsquareAdj(bans.rda.vars))
 saveRDS(bans.rda.vars,"results/RDA_output/BANS.RDAresults.envonly_b4_varsel1mil.RDS")

@@ -80,21 +80,80 @@ plink --ped BANS.unrel_ind.imputed4.1.ped \
   --out BANS.unrel_ind.imputed4.1
 
 ######## SUBSAMPLED SNPS ##########
-conda activate GWAS2
 N=1000000
 bfile="BANS.unrel_ind.imputed4.1"
 
 cut -f2 ${bfile}.bim | shuf -n $N > snps_1mil.txt
-plink --bfile $bfile --extract snps_1mil.txt -aec --make-bed --out subsampled_pruned_unrelindv.1mil
+plink --bfile $bfile --extract snps_1mil.txt -aec --make-bed --out subsampled_unrelindv.1mil
 
-plink --bfile subsampled_pruned_unrelindv.1mil -aec --recode A --out subsampled_pruned_unrelindv.1mil
+plink --bfile subsampled_unrelindv.1mil -aec --recode A --out subsampled_unrelindv.1mil
 
 #recut header
-cut -d$'\t' -f7- subsampled_pruned_unrelindv.1mil.raw > subsampled_noheader.raw
+cut -d$'\t' -f7- subsampled_unrelindv.1mil.raw > subsampled_noheader.raw
 ```
 
+# PRUNING TO JUST RELEVANT VARIABLES
+So, on initial runs of this workflow my VIF was very inflated suggesting high collinearity between predictors. This is to be expected as lots of environmental variables are highly correlated. So, the goal is to take the CHELSA variables and prune them a bit using what seems biologically relevant and what isn't already super correlated and then run those variables into the forward selection. The filter by VIF later. I want to try and catch at least one temp variable, one precip variable, a moisture variable and a seasonaility variable...
+
+General Temperature:
+| Variable | Name                    | Interpretation                               |
+| -------- | ----------------------- | -------------------------------------------- |
+| BIO1     | Annual Mean Temperature | Overall average temperature across year      |
+| BIO2     | Mean Diurnal Range      | Avg (daily max − min); day-night variability |
+| BIO3     | Isothermality           | Day-night variation relative to annual range |
+| BIO4     | Temperature Seasonality | How variable temperature is across year      |
+
+Temperature Extremes:
+| Variable | Name                             | Interpretation                      |
+| -------- | -------------------------------- | ----------------------------------- |
+| BIO5     | Max Temperature of Warmest Month | Heat extremes                       |
+| BIO6     | Min Temperature of Coldest Month | Cold extremes                       |
+| BIO7     | Temperature Annual Range         | BIO5 − BIO6 (overall thermal range) |
+
+Seasonal Temperature:
+| Variable | Name                      | Interpretation             |
+| -------- | ------------------------- | -------------------------- |
+| BIO8     | Mean Temp Wettest Quarter | Temp during wet season     |
+| BIO9     | Mean Temp Driest Quarter  | Temp during dry season     |
+| BIO10    | Mean Temp Warmest Quarter | Growing season temperature |
+| BIO11    | Mean Temp Coldest Quarter | Winter severity            |
+
+General Precip:
+| Variable | Name                        | Interpretation               |
+| -------- | --------------------------- | ---------------------------- |
+| BIO12    | Annual Precipitation        | Total yearly precipitation   |
+| BIO13    | Precipitation Wettest Month | Extreme wet conditions       |
+| BIO14    | Precipitation Driest Month  | Extreme dry conditions       |
+| BIO15    | Precipitation Seasonality   | Variability in precipitation |
+
+Seasonal Precip:
+| Variable | Name                          | Interpretation               |
+| -------- | ----------------------------- | ---------------------------- |
+| BIO16    | Precipitation Wettest Quarter | Wet season precipitation     |
+| BIO17    | Precipitation Driest Quarter  | Dry season precipitation     |
+| BIO18    | Precipitation Warmest Quarter | Growing season precipitation |
+| BIO19    | Precipitation Coldest Quarter | Winter precipitation         |
+
+So let's try
+Temperature
+
+BIO1 — mean climate
+BIO5 — heat extremes
+BIO6 — cold extremes
+BIO10 — breeding season temperature
+
+Precipitation
+
+BIO12 — total moisture
+BIO18 — breeding season precipitation
+
+Seasonality
+
+BIO4 — temperature variability
+BIO15 — precipitation variability
+
 # ACTUAL SBATCH SCRIPT
-```{bash}
+```{bash, label="run_var_sel.sbatch"}
 #!/bin/bash
 #SBATCH --job-name=RDA
 #SBATCH --output=RDA.%j.out
@@ -117,36 +176,64 @@ Rscript RDA_env_vars_cluster.R
 ```
 
 # CLUSTER RESULTS
+## Run with All Environmental Variables (Bio01-19)
 RDA_output/BANS.varsel_results.RDS
 
+RDA Model results:
+$r.squared
+[1] 0.08888219
+
+$adj.r.squared
+[1] 0.00965455
+
+Variable Selection:
+                  R2.adj Df    AIC      F Pr(>F)
++ bio17         0.0020712  1 2513.7 1.4151  0.002 **
++ bio06         0.0032368  1 2514.4 1.2327  0.002 **
++ bio09         0.0038653  1 2515.3 1.1249  0.002 **
++ bio19         0.0043596  1 2516.2 1.0978  0.002 **
++ bio08         0.0051870  1 2517.0 1.1630  0.002 **
++ bio14         0.0062037  1 2517.7 1.1995  0.002 **
++ bio01         0.0065352  1 2518.6 1.0647  0.002 **
++ bio05         0.0070751  1 2519.5 1.1050  0.002 **
++ bio04         0.0074375  1 2520.3 1.0701  0.002 **
++ bio02         0.0080437  1 2521.2 1.1167  0.002 **
++ bio18         0.0085708  1 2522.0 1.1010  0.002 **
++ bio03         0.0088972  1 2522.9 1.0622  0.006 **
+<All variables> 0.0096545
+---
+[1] "VIF"
+     bio17      bio06      bio09      bio19      bio08      bio14      bio01
+1664.02485  198.96653   49.73612  433.99826   12.64477  981.48488  140.74337
+     bio05      bio04      bio02      bio18      bio03
+ 129.44836  192.83612  230.74923   22.36195  264.74469
+ 
+## Run with the Pruned Variable Set
+
+Notes on references for using the VIF:
+1. VIF > 10 indicates a serious collinearity problem https://quantifyinghealth.com/vif-threshold/ 
+2. To address multicollinearity, we retained layers with a Spearman correlation coefficient (r) <0.7 and Variance Inflation Factor (VIF) <10. https://www.sciencedirect.com/science/article/pii/S2351989425000186?utm_source=chatgpt.com
+3. By applying a Variance Inflation Factor (VIF) criterion of <10... https://advanced.onlinelibrary.wiley.com/doi/10.1002/advs.202506492
+4. Variance inflation factor (VIF) analysis was then usedto exclude highly correlated variables using a VIF threshold of 10(Dyer et al., 2010). https://doi.org/10.1111/mec.15637
+
 ```{bash}
-rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/results/RDA_output/BANS.varsel_results1mil_narrow.RDS /Users/ericarobertson/Desktop/BANS_adaptive_units/analysis/03.GEA/results/RDA_output/
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/results/RDA_output/BANS.varsel_envonly_results1mil.RDS /Users/ericarobertson/Desktop/BANS_Pub/analysis/05.genomic_offset/scratch/RDA_output/
 ```
 
 ```{r}
 # Get names of selected predictors
 mod <- readRDS("../scratch/RDA_output/BANS.varsel_envonly_results1mil.RDS")
-mod$anova
-vif.cca(mod)
 
 top_vars <- attr(terms(mod), "term.labels")
 
 top_vars
+
 env <- fread("../scratch/Bans_envonly_pop.txt")
-env %>% select(Group, BGP_ID, Long, Lat, bio14, bio09, bio06) %>% write.csv("../scratch/RDA_output/BANS_topRDA_envonly_vars1mil_narrow.csv", row.names = F)
+env %>% select(Group, BGP_ID, Long, Lat, top_vars) %>% write.csv("../scratch/RDA_output/BANS_topRDA_envonly_vars1mil_narrow.csv", row.names = F)
 ```
-Results:
-                                      R2.adj Df    AIC      F Pr(>F)   
-+ Temperate.or.Subpolar.Shrubland 0.0019295  1 2513.7 1.3867  0.002 **
-+ bio14                           0.0033711  1 2514.4 1.2878  0.002 **
-+ bio09                           0.0043522  1 2515.2 1.1951  0.002 **
-+ Wetland                         0.0049450  1 2516.1 1.1173  0.002 **
-+ bio06                           0.0054900  1 2516.9 1.1074  0.002 **
-+ clay                            0.0059692  1 2517.8 1.0940  0.002 **
-<All variables>                   0.0102967                           
 
 ```{r}
-env_pop <- read.csv("../scratch/RDA_output/BANS_topRDA_vars1mil_narrow.csv")
+env_pop <- read.csv("../scratch/RDA_output/BANS_topRDA_envonly_vars1mil_narrow.csv")
 cor_mat <- cor(env_pop %>% dplyr::select(-Group, -BGP_ID, -Long, -Lat), use = "pairwise.complete.obs", method = "pearson")
 
 cor_df <- as.data.frame(cor_mat) %>%
@@ -166,28 +253,13 @@ ggplot(cor_df, aes(Var1, Var2, fill = cor)) +
     axis.text.y = element_text(size = 6)
   )
 ```
-So we have some variables come up that are highly correlated. Let's check those out and exclude some.
-
-bio14 Precipitation of the Driest Month
-bio09 Mean Daily Near-Surface Air Temperature of the Wettest Quarter
-bio06 Mean Daily Minimum Near-Surface Air Temperature of the Coldest Month
-
-So, I'm removing all the "coldest" ones because we're interested in stuff happening in during the breeding season, which would not be the coldest part of the year. To me this means that we want the more biologically appropriate variable that it came up as correlated with. So that leaves Mean Monthly Precipitation of the Driest Quarter (bio17) and Mean Daily Near-Surface Air Temperature of the Wettest Quarter (bio08), which makes some sense biologically.
-
-So that leaves these are the top variables:
-Temperate or Subpolar Shrubland land cover
-bio17 (Mean Monthly Precipitation of the Driest Quarter)
-Wetland
-clay
-bio08 (Mean Daily Near-Surface Air Temperature of the Wettest Quarter)
-Water
 
 ```{r}
-top_vars_uncor <- c("Temperate.or.Subpolar.Shrubland", "bio06", "Wetland", "clay", "bio14", "bio09")
+top_vars_uncor <- c()
 
-env %>% select(Pop, BGP_ID, Long, Lat, all_of(top_vars_uncor)) %>% write.csv("BANS_topRDA_vars1mil_uncor.csv", row.names = F)
+env %>% select(Pop, BGP_ID, Long, Lat, all_of(top_vars_uncor)) %>% write.csv("BANS_envonly_vars1mil_uncorvars.csv", row.names = F)
 
-env_pop <- read.csv("BANS_topRDA_vars1mil_uncor.csv")
+env_pop <- read.csv("BANS_envonly_vars1mil_uncorvars.csv")
 cor_mat <- cor(env_pop %>% dplyr::select(-Pop, -BGP_ID, -Long, -Lat), use = "pairwise.complete.obs", method = "pearson")
 
 cor_df <- as.data.frame(cor_mat) %>%
@@ -207,4 +279,3 @@ ggplot(cor_df, aes(Var1, Var2, fill = cor)) +
     axis.text.y = element_text(size = 6)
   )
 ```
-That looks a lot better! Let's go ahead with these variables.
