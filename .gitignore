@@ -25,7 +25,5 @@ analysis/05.genomic_offset/scratch/RDA_output
 analysis/05.genomic_offset/scratch/spatial_files
 
 #06.final_figures
-analysis/06.final_figures/figures_output/*predictions
-analysis/06.final_figures/figures_output/partial_effects
-analysis/06.final_figures/figures_output/trends
+analysis/06.final_figures
 
