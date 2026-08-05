@@ -16,151 +16,29 @@ vcftools: for filtering out scaffolds that only have one variant
 ## Bash and unix scripting
 Most of this will be done with bash or scripting in the terminal. I'm using Rmarkdown because I like the code chunks. But you really won't be using R (except for maybe plotting something).
 
-Another way to count the number of variants per chromosome is with bcftools. First, you need to bgzip our vcfile and index it with bcftools. I have bcftools loaded in a conda environment. __If above worked,  you can skip to the next part on line 106__
-
-```
-conda activate bcftools
-
-#from vcf/filtered_HC
-bgzip BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind0.5miss.0.8miss.recode.vcf
-
-#from 02.imputation
-bcftools index ../01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind0.5miss.0.8miss.recode.vcf.gz
-```
-
-With an indexed vcf file, it's really easy to identify the next steps. Maybe not fast give thousands of scaffolds, but quicker than any other method I've found
-
-Create a chromosome list using bcftools to extract information, use uniq to remove duplicated chromosomes.
-```{bash}
-bcftools query -f '%CHROM\n' ../01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf |uniq > chr_file
-
-
-cat chr_file|head -5
-```
-
-CM026847.1
-CM026848.1
-CM026849.1
-CM026850.1
-CM026851.1
-
-Now we want to count the number of variants per chromosme. Here's one way you do it for one scaffold/chromosome. Note, that it's actually 
-1) view the vcf, for one region (aka scaffold), then pipe in a grep command to remove comment in vcf (^#= starts with #), and the -c means to count the number of occurances.
+For the imputation, we want to remove any scaffolds or chromosomes that have a small number of loci on them (this will make the imputation bad). Another way to count the number of variants per chromosome is with bcftools. First, you need to bgzip our vcfile and index it with bcftools. I have bcftools loaded in a conda environment.
 
 ```{bash}
-vcf_in="../01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf"
-bcftools view -r 'Scaffold_1__1_contigs__length_151072562' ROFI203_14Island_Asian.pass-maf-0.05.biallelic.SNP.8miss.rm_batcheff19.rmdup.rmrel.recode.vcf.gz | grep -v -c '^#'
-
-#Scaffold_1
-##729289
-```
-
-Let's create a bash script to do this for all scaffolds
-
-```
-nano variant_count.sh
-
-vcf_in="../01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf"
-bgzip $vcf_in
-bcftools index ../01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf.gz
-```
-
-```
-#!/bin/bash
-#
-#SBATCH --job-name=count
-#SBATCH --output=count.%j.out
-#SBATCH --error=count.%j.err
-#################
-#SBATCH -t 1:00:00
-#SBATCH -p amilan
-#SBATCH --qos=normal
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node 2
-#SBATCH --mem=6G
-#################
-#SBATCH --mail-type=END
-#SBATCH  --mail-user=ericacnr@colostate.edu
-##################
-#echo commands to stdout
-
-source ~/.bashrc
+vcf="/scratch/alpine/ericacnr@colostate.edu/BANS/01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf"
 
 conda activate bioinf
 
-chromlist=($(cat chr_file))
-vcf_in="../01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf.gz"
+bgzip $vcf
 
-for chrom in "${chromlist[@]}"; do
-  count=$(bcftools view -r "$chrom" "$vcf_in" | grep -vc '^#')
-  echo "$chrom:$count" >> spchrom.txt
-done
-```
+gzvcf="/scratch/alpine/ericacnr@colostate.edu/BANS/01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf.gz"
 
-Once it finishes, you should have a file called spchrom.txt. What we want for beagle is to identify only the scaffolds with 1 variant
+#from 02.imputation
+bcftools index $gzvcf
 
-```
-cat spchrom.txt|tr ":" "\t"| awk '$2<10{print$1}' > singleton.chr.txt
-```
+bcftools index -s "$gzvcf" | awk '$3 >= 10 {print $1"\t1\t"$2}' > keep_scaffolds.regions.txt
 
-
-Create a new bash script to just get the chromosome and position for the singleton chromosomes
-
-```
-vcf_in="../01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf.gz"
-
-chromlist=($(cat singleton.chr.txt))
-
-for chrom in ${chromlist[@]}
-do
-count=$(bcftools query -r $chrom -f '%CHROM\t%POS\n' $vcf_in| grep -v '^#')
-echo "$count" >> singleton_lth10_pos_bcftools.txt
-done
-```
-
-Now we want to remove these positions from the original vcf file, and we can do this with vcftools --exclude-positions 
-
-```
-vcf_in="../01.fastq_processing/mega-non-model-wgs-snakeflow/results/bqsr-round-0/vcf/filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf.gz"
-
-vcftools --gzvcf $vcf_in \
---out BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.rm_scaf_lth10 \
---exclude-positions singleton_lth10_pos_bcftools.txt --recode
-```
-
-Now you have a vcf file without chromsomes with only one loci (less than 10). Fingers crossed beagle does not throw and error.
-
-I have beagle in another conda environment, and I have a slurm script to run this on the summit cluster, with 24 cores.
-
-After filtering, kept 3123809 out of a possible 3124151 Sites
-
-```{}
-#!/bin/bash
-#
-#SBATCH --job-name=impute
-#SBATCH --output=impute.%j.out
-#SBATCH --error=impute.%j.err
-#SBATCH -t 6:00:00
-#SBATCH --partition=amilan
-#SBATCH --qos=normal
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node 11
-#SBATCH --mem=40G
-#SBATCH --mail-type=END,FAIL
-#SBATCH  --mail-user=ericacnr@colostate.edu
-
-#echo commands to stdout
-
-set -x
-source ~/.bashrc
-
-BEAGLE_JAR="/projects/ericacnr@colostate.edu/mambaforge/envs/bioinf/java/beagle.27Jan18.7e1.jar"
-vcf="BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.rm_scaf_lth10.recode.vcf.gz"
-
-java -Xss5m -Xmx90g -jar $BEAGLE_JAR \
-  gtgl=$vcf \
-  out=BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.imputed4.1.vcf \
-  nthreads=48
+bcftools view \
+  -R keep_scaffolds.regions.txt \
+  -Oz \
+  -o BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.rm_scaf_lth10.vcf.gz \
+  "$gzvcf"
+  
+bcftools index -t BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.rm_scaf_lth10.vcf.gz 
 ```
 
 # Problem Shooting

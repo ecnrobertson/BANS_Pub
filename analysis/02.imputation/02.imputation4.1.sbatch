@@ -18,9 +18,9 @@ set -x
 source ~/.bashrc
 
 BEAGLE_JAR="/projects/ericacnr@colostate.edu/mambaforge/envs/bioinf/java/beagle.27Jan18.7e1.jar"
-vcf="BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.rm_scaf_lth10.recode.vcf"
+vcf="BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.rm_scaf_lth10.vcf.gz"
 
 java -Xss5m -Xmx90g -jar $BEAGLE_JAR \
   gtgl=$vcf \
-  out=BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.rm_scaf_lth10.recode.vcf \
+  out=BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.rm_scaf_lth10.imputed4.1 \
   nthreads=48
