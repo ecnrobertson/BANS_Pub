@@ -23,10 +23,10 @@ library(geosphere)
 ```
 
 # INTRODUCTION
-The follow script outlines to steps for environmental variable selection using RDA forward selection. The goal of this process is to take all the potential variables I've collected and pick those that most strongly predict allele frequencies. This is computationally intensive, so the actual running of stuff will be on the cluster. I've got that outlined in 05.1.RDA_env_vars_cluster.R. In that script I also subsample to 1mil SNPs: this is to save on computation time and effort.
+The follow script outlines to steps for environmental variable selection using RDA forward selection. The goal of this process is to take all the potential variables I've collected and pick those that most strongly predict allele frequencies. This is computationally intensive, so the actual running of stuff will be on the cluster. I've got that outlined in 05.1.RDA_env_vars_cluster.R. In that script I also subsample to 2mil SNPs: this is to save on computation time and effort.
 
 The input files for the bash script are:
-1. subsampled_noheader.raw
+1. subsampled_unrelindv.2mil_noheader.raw
 2. data/Bans_env_pop.txt
 
 Some notes on the forward selection process: "Forward selection starts from a “null” model where the response is explained only by an intercept. Variables are then added to the model one by one to try to reach the amount of variance explained by a “full” model (i.e., model including all the explanatory variables), while limiting the amount of redundancy among included variables." (Capblanq 2018)
@@ -40,28 +40,27 @@ R2scope = T : the activates the double-stopping criterion, a variable is added o
 # ENVIRONMENTAL VARIABLES
 So this is getting together the climate data for each population and filtering to pops (clusters) that have more than 4 samples.
 ```{r}
-pops <- read.csv("../03.delineate_ESUs/scratch/pops.csv")
-env <- fread("../scratch/BANS.CHELSA.txt")
+pops <- read.csv("../../03.delineate_ESUs/scratch/pops.csv")
+env <- fread("../output/BANS.CHELSA_all.txt")
 
 #renaming the soil content columns so it's consistent and also filtering by sample size
-clim <- pops %>%
-  left_join(env, by = "BGP_ID") %>%
-  add_count(Group, name = "n_group") %>%
-  filter(n_group >= 4) %>%
-  select(-n_group)
+clim <- env %>%
+  left_join(pops, by = c("BGP_ID", "Long", "Lat"))
 ```
+Note that this drops cluster 11, NS_2, as this group only has 2 individuals. I think this is acceptable. So, new sample size for GEA analyses should be 199.
 
 ```{r}
 ## reorder so that env and allele frequencies per pop are reported in the same order
-plink_pca <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(V1) %>% rename(BGP_ID=V1)
+plink_pca <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE) %>% dplyr::select(V1) %>% rename(BGP_ID=V1)
 
 clim_ordered <- plink_pca %>% left_join(clim)
+nrow(clim_ordered)
 
-write.table(clim_ordered, file = "../scratch/Bans_envonly_pop.txt", row.names=F, quote=F, sep="\t")
+write.table(clim_ordered, file = "../output/Bans_envonly_pop.txt", row.names=F, quote=F, sep="\t")
 ```
 
 ```{bash}
-rsync -avzP /Users/ericarobertson/Desktop/BANS_Pub/analysis/05.genomic_offset/scratch/Bans_envonly_pop.txt ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/data
+rsync -avzP /Users/ericarobertson/Desktop/BANS_Pub/analysis/05.genomic_offset/output/Bans_envonly_pop.txt ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/data
 ```
 
 # GENOTYPE FILE
@@ -89,11 +88,11 @@ plink --bfile $bfile --extract snps_1mil.txt -aec --make-bed --out subsampled_un
 plink --bfile subsampled_unrelindv.1mil -aec --recode A --out subsampled_unrelindv.1mil
 
 #recut header
-cut -d$'\t' -f7- subsampled_unrelindv.1mil.raw > subsampled_noheader.raw
+cut -d$'\t' -f7- subsampled_unrelindv.1mil.raw > subsampled_unrelindv.1mil_noheader.raw
 ```
 
 # PRUNING TO JUST RELEVANT VARIABLES
-So, on initial runs of this workflow my VIF was very inflated suggesting high collinearity between predictors. This is to be expected as lots of environmental variables are highly correlated. So, the goal is to take the CHELSA variables and prune them a bit using what seems biologically relevant and what isn't already super correlated and then run those variables into the forward selection. The filter by VIF later. I want to try and catch at least one temp variable, one precip variable, a moisture variable and a seasonaility variable...
+So, on initial runs of this workflow my VIF was very inflated suggesting high collinearity between predictors. This is to be expected as lots of environmental variables are highly correlated. So, the goal is to take the CHELSA variables and prune them a bit using what seems biologically relevant and what isn't already super correlated and then run those variables into the forward selection. The filter by VIF later. I want to try and catch at least one temp variable, one precip variable, a moisture variable and a seasonality variable...
 
 General Temperature:
 | Variable | Name                    | Interpretation                               |
@@ -152,13 +151,19 @@ Seasonality
 BIO4 — temperature variability
 BIO15 — precipitation variability
 
+Notes on references for using the VIF:
+1. VIF > 10 indicates a serious collinearity problem https://quantifyinghealth.com/vif-threshold/ 
+2. To address multicollinearity, we retained layers with a Spearman correlation coefficient (r) <0.7 and Variance Inflation Factor (VIF) <10. https://www.sciencedirect.com/science/article/pii/S2351989425000186?utm_source=chatgpt.com
+3. By applying a Variance Inflation Factor (VIF) criterion of <10... https://advanced.onlinelibrary.wiley.com/doi/10.1002/advs.202506492
+4. Variance inflation factor (VIF) analysis was then usedto exclude highly correlated variables using a VIF threshold of 10 (Dyer et al., 2010). https://doi.org/10.1111/mec.15637
+
 # ACTUAL SBATCH SCRIPT
 ```{bash, label="run_var_sel.sbatch"}
 #!/bin/bash
-#SBATCH --job-name=varsel1mil
-#SBATCH --output=varsel1mil.%j.out
-#SBATCH --error=varsel1mil.%j.err
-#SBATCH -t 8:00:00
+#SBATCH --job-name=varsel2mil
+#SBATCH --output=varsel2mil.%j.out
+#SBATCH --error=varsel2rmil.%j.err
+#SBATCH -t 11:00:00
 #SBATCH -p amilan
 #SBATCH --qos=normal
 #SBATCH --nodes=1
@@ -172,14 +177,10 @@ source ~/.bashrc
 ############ Load and Run RDA.R script ############
 conda activate R
 Run your R script
-Rscript RDA_env_vars_cluster.R
+Rscript RDA_env_varsel.R
 ```
 
 # CLUSTER RESULTS
-## Run with All Environmental Variables (Bio01-19)
-RDA_output/BANS.varsel_results.RDS
-
-RDA Model results:
 $r.squared
 [1] 0.08888219
 
@@ -187,95 +188,63 @@ $adj.r.squared
 [1] 0.00965455
 
 Variable Selection:
-                  R2.adj Df    AIC      F Pr(>F)
-+ bio17         0.0020712  1 2513.7 1.4151  0.002 **
-+ bio06         0.0032368  1 2514.4 1.2327  0.002 **
-+ bio09         0.0038653  1 2515.3 1.1249  0.002 **
-+ bio19         0.0043596  1 2516.2 1.0978  0.002 **
-+ bio08         0.0051870  1 2517.0 1.1630  0.002 **
-+ bio14         0.0062037  1 2517.7 1.1995  0.002 **
-+ bio01         0.0065352  1 2518.6 1.0647  0.002 **
-+ bio05         0.0070751  1 2519.5 1.1050  0.002 **
-+ bio04         0.0074375  1 2520.3 1.0701  0.002 **
-+ bio02         0.0080437  1 2521.2 1.1167  0.002 **
-+ bio18         0.0085708  1 2522.0 1.1010  0.002 **
-+ bio03         0.0088972  1 2522.9 1.0622  0.006 **
-<All variables> 0.0096545
+                   R2.adj Df    AIC      F Pr(>F)
++ bio12         0.0020467  1 2514.4 1.4081  0.002 **
++ bio01         0.0029912  1 2515.2 1.1876  0.002 **
++ bio15         0.0034483  1 2516.1 1.0904  0.002 **
++ bio18         0.0041329  1 2516.9 1.1347  0.002 **
++ bio05         0.0045091  1 2517.8 1.0737  0.002 **
++ bio04         0.0050089  1 2518.7 1.0974  0.002 **
++ bio10         0.0052239  1 2519.6 1.0417  0.008 **
+<All variables> 0.0053291
 ---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 [1] "VIF"
-     bio17      bio06      bio09      bio19      bio08      bio14      bio01
-1664.02485  198.96653   49.73612  433.99826   12.64477  981.48488  140.74337
-     bio05      bio04      bio02      bio18      bio03
- 129.44836  192.83612  230.74923   22.36195  264.74469
+     bio12      bio01      bio15      bio18      bio05      bio04      bio10
+ 31.244876 140.988814   7.230463  13.854756  25.161202  62.213195  91.120916
  
 ## Run with the Pruned Variable Set
+results/RDA_output/BANS.RDAresults.envonly_bio5.15.18_varsel.RDS
 
-Notes on references for using the VIF:
-1. VIF > 10 indicates a serious collinearity problem https://quantifyinghealth.com/vif-threshold/ 
-2. To address multicollinearity, we retained layers with a Spearman correlation coefficient (r) <0.7 and Variance Inflation Factor (VIF) <10. https://www.sciencedirect.com/science/article/pii/S2351989425000186?utm_source=chatgpt.com
-3. By applying a Variance Inflation Factor (VIF) criterion of <10... https://advanced.onlinelibrary.wiley.com/doi/10.1002/advs.202506492
-4. Variance inflation factor (VIF) analysis was then usedto exclude highly correlated variables using a VIF threshold of 10(Dyer et al., 2010). https://doi.org/10.1111/mec.15637
+[1] "Rsquare of all variable model:"
+$r.squared
+[1] 0.01814781
 
-```{bash}
-rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/results/RDA_output/BANS.varsel_envonly_results1mil.RDS /Users/ericarobertson/Desktop/BANS_Pub/analysis/05.genomic_offset/scratch/RDA_output/
-```
+$adj.r.squared
+[1] 0.003119464
 
-```{r}
-# Get names of selected predictors
-mod <- readRDS("../scratch/RDA_output/BANS.varsel_envonly_results1mil.RDS")
+                   R2.adj Df    AIC      F Pr(>F)
++ bio15         0.0017895  1 2514.4 1.3568  0.002 **
++ bio05         0.0027754  1 2515.2 1.1957  0.002 **
++ bio18         0.0031195  1 2516.1 1.0680  0.002 **
+<All variables> 0.0031195
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+[1] "VIF"
+   bio15    bio05    bio18
+1.275642 1.737258 1.919429
 
-top_vars <- attr(terms(mod), "term.labels")
+## Run with Another Pruned Variable Set
+results/RDA_output/BANS.RDAresults.envonly_bio5.10.15.18_varsel.RDS
 
-top_vars
+[1] "Rsquare of all variable model:"
+$r.squared
+[1] 0.02350819
 
-env <- fread("../scratch/Bans_envonly_pop.txt")
-env %>% select(Group, BGP_ID, Long, Lat, top_vars) %>% write.csv("../scratch/RDA_output/BANS_topRDA_envonly_vars1mil_narrow.csv", row.names = F)
-```
+$adj.r.squared
+[1] 0.00347759
 
-```{r}
-env_pop <- read.csv("../scratch/RDA_output/BANS_topRDA_envonly_vars1mil_narrow.csv")
-cor_mat <- cor(env_pop %>% dplyr::select(-Group, -BGP_ID, -Long, -Lat), use = "pairwise.complete.obs", method = "pearson")
+                   R2.adj Df    AIC      F Pr(>F)
++ bio15         0.0017895  1 2514.4 1.3568  0.002 **
++ bio05         0.0027754  1 2515.2 1.1957  0.002 **
++ bio18         0.0031195  1 2516.1 1.0680  0.004 **
++ bio10         0.0034776  1 2517.1 1.0704  0.002 **
+<All variables> 0.0034776
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+[1] "VIF"
+    bio15     bio05     bio18     bio10
+ 1.847756 20.782292  3.141194 13.999969
 
-cor_df <- as.data.frame(cor_mat) %>%
-  rownames_to_column("Var1") %>%
-  pivot_longer(-Var1, names_to = "Var2", values_to = "cor")
 
-ggplot(cor_df, aes(Var1, Var2, fill = cor)) +
-  geom_tile() +
-  scale_fill_gradient2(
-    low = "#2166AC", mid = "white", high = "#B2182B",
-    midpoint = 0, limits = c(-1, 1)
-  ) +
-  coord_fixed() +
-  theme_void() +
-  theme(
-    axis.text.x = element_text(angle = 90, size = 6),
-    axis.text.y = element_text(size = 6)
-  )
-```
-
-```{r}
-top_vars_uncor <- c()
-
-env %>% select(Pop, BGP_ID, Long, Lat, all_of(top_vars_uncor)) %>% write.csv("BANS_envonly_vars1mil_uncorvars.csv", row.names = F)
-
-env_pop <- read.csv("BANS_envonly_vars1mil_uncorvars.csv")
-cor_mat <- cor(env_pop %>% dplyr::select(-Pop, -BGP_ID, -Long, -Lat), use = "pairwise.complete.obs", method = "pearson")
-
-cor_df <- as.data.frame(cor_mat) %>%
-  rownames_to_column("Var1") %>%
-  pivot_longer(-Var1, names_to = "Var2", values_to = "cor")
-
-ggplot(cor_df, aes(Var1, Var2, fill = cor)) +
-  geom_tile() +
-  scale_fill_gradient2(
-    low = "#2166AC", mid = "white", high = "#B2182B",
-    midpoint = 0, limits = c(-1, 1)
-  ) +
-  coord_fixed() +
-  theme_void() +
-  theme(
-    axis.text.x = element_text(angle = 90, size = 6),
-    axis.text.y = element_text(size = 6)
-  )
-```
+So, we have a winner! BANS.RDAresults.envonly_bio5.15.18_varsel.RDS

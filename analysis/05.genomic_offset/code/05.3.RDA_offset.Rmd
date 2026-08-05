@@ -4,7 +4,15 @@ author: "Erica Robertson"
 date: "2026-03-23"
 output: html_document
 ---
-
+# Libraries
+```{r, message="false"}
+library(tidyverse)
+library(terra)
+library(sf)
+library(ggplot2)
+library(raster)
+library(rnaturalearth)
+```
 So, I'm following the Capblancq and Forester paper for using the RDA offset. Some specific considerations are:
 
 1. I'm using the same variables as I did for the RDA to identify adaptive loci, but excluding those that aren't environmental (so soil stuff) because I don't have future projections
@@ -34,36 +42,41 @@ So, according the the Lind Lotterhos paper, using just the adaptive loci is basi
 
 # INPUT FILES
 ## Getting environmental data ready
-So, this is getting the contemporary (1981-2010) data ready for the important variables (bio06, bio09, and bio14). These get read in, stacked, projected.
+So, this is getting the contemporary (1981-2010) data ready for the important variables (bio18 and bio15). These get read in, stacked, cropped and projected.
 ```{r}
+# Just need the data for north america
+map <- ne_states(country = c("United States of America", "Canada"), returnclass = 'sf')
+na_union <- st_union(map)
+ext.na <- st_bbox(na_union)
+
 library(raster)
 # 1981-2010
 cont.paths <- list.files("../scratch/spatial_files/ClimateNA_1981-2010/", recursive = TRUE, full.names = TRUE)
 
-cont.stack <- raster::stack(cont.paths)
-names(cont.stack) <- c("bio06", "bio09", "bio14")
+cont.stack <- lapply(cont.paths, raster) %>% raster::crop(y=ext.na)
+names(cont.stack) <- c("bio15", "bio18")
 
 target_crs <- CRS("+proj=lcc +lat_1=48 +lat_2=33 +lon_0=-100 +datum=WGS84")
 cont.stack_lcc <- raster::projectRaster(cont.stack, crs = target_crs, method = "bilinear")
 
 # 2041-2070
 futr.paths_41 <- list.files("../scratch/spatial_files/ClimateNA_2041-2070/", recursive = TRUE, full.names = T)
-futr.stack_41 <- lapply(futr.paths_41, raster)
-names(futr.stack_41) <- c("bio06", "bio09", "bio14")
-plot(futr.stack_41$bio06)
+futr.stack_41 <- lapply(futr.paths_41, raster) %>% raster::crop(y=ext.na)
+names(futr.stack_41) <- c("bio15", "bio18")
+plot(futr.stack_41$bio15)
 
 futr.stack_41 <- raster::stack(futr.stack_41) %>% 
   raster::projectRaster(
     crs = "+proj=lcc +lat_1=48 +lat_2=33 +lon_0=-100 +datum=WGS84",
     method = "bilinear")
-saveRDS(cont.stack, "../scratch/spatial_files/cont_stack.rds")
+saveRDS(cont.stack_lcc, "../scratch/spatial_files/cont_stack.rds")
 saveRDS(futr.stack_41, "../scratch/spatial_files/2041_futr_stack.rds")
 
 # 2071-2100
 futr.paths_71 <- list.files("../scratch/spatial_files/ClimateNA_2071-2100/", recursive = TRUE, full.names = T)
-futr.stack_71 <- lapply(futr.paths_71, raster)
-names(futr.stack_71) <- c("bio06", "bio09", "bio14")
-plot(futr.stack_71$bio06)
+futr.stack_71 <- lapply(futr.paths_71, raster) %>% raster::crop(y=ext.na)
+names(futr.stack_71) <- c("bio15", "bio18")
+plot(futr.stack_71$bio15)
 
 futr.stack_71 <- raster::stack(futr.stack_71) %>% 
   raster::projectRaster(
@@ -114,51 +127,56 @@ BANS.unrel_ind.imputed4.1.fam (used for ID order; note: not under data/ in your 
 sample_unrel_short.txt (unrelated individuals list)
 BANS_all_sample_data_shifted.csv (contains BGP_ID, Long, Lat)
 
-# GENOMIC OFFSET
-results/RDA_outliers_justenv.rds
 ```{bash}
-rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/06.genomic_offset/results/RDA_proj_offset_all_loci_table.rds /Users/ericarobertson/Desktop/BANS_adaptive_units/analysis/06.genomic_offset/ 
+rsync -avzP /Users/ericarobertson/Desktop/BANS_Pub/analysis/05.genomic_offset/scratch/spatial_files/ClimateNA_* ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/06.genomic_offset/data/
 ```
 
+```{bash}
+rsync -avzP /Users/ericarobertson/Desktop/BANS_Pub/raw_data/BANS_all_sample_data_shifted.csv ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/06.genomic_offset/data/
+```
+```{bash}
+rsync -avzP /Users/ericarobertson/Desktop/BANS_adaptive_units/analysis/03.GEA/BANS.unrel_ind.imputed4.1.fam ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/06.genomic_offset/data/
+```
+
+## making breeding layer
+```{r}
+library(rnaturalearth)
+library(raster)
+map <- ne_states(country = c("United States of America", "Canada"), returnclass = 'sf')
+na_union <- st_union(map)
+breeding.sf <- st_read("../../../raw_data/spatial_files/banswa_range_2023.gpkg") %>% filter(season=="breeding") %>% st_transform(crs(map))
+breeding_na <- st_intersection(breeding.sf, na_union)
+breeding_na <- st_make_valid(breeding_na)
+range_sf <- st_union(breeding_na) |> st_make_valid() |> st_transform(4326)
+range_sp <- as(range_sf, "Spatial")
+plot(range_sp)
+
+saveRDS(range_sp, "../scratch/spatial_files/bandswa_range_NA.RDS")
+```
+
+```{bash}
+rsync -avzP /Users/ericarobertson/Desktop/BANS_Pub/analysis/05.genomic_offset/scratch/spatial_files/bandswa_range_NA.RDS ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/06.genomic_offset/data/
+```
+
+# GENOMIC OFFSET
+
+
+## RDA_offset_all_loci.R
+
 # VISUALIZING RESULTS
----------- Outputs you write
-results/rda_justenvironment_narrow.rds
-results/RDA_outliers_justenv.rds
-results/RDA_proj_offset_table.rds
-
-So, we can plot the adaptive loci from this environment only RDA.
-## Plot loci and environmental vectors in RDA space (biplot)
-
-Goal: visualize how loci and predictors align on RDA axes.
-```{r, message=FALSE}
-library(ggplot2)
-library(vegan)
-
-RDA_outliers <- readRDS("RDA_outliers_justenv.rds")
-
-TAB_loci <- as.data.frame(scores(RDA_outliers, choices=c(1:2), display="species", scaling="none"))
-TAB_var <- as.data.frame(scores(RDA_outliers, choices=c(1:2), display="bp"))
-
-p <- ggplot() +
-  geom_hline(yintercept=0, linetype="dashed", color = gray(.80), linewidth=0.6) +
-  geom_vline(xintercept=0, linetype="dashed", color = gray(.80), linewidth=0.6) +
-  geom_point(data = TAB_loci, aes(x=RDA1*3, y=RDA2*3), colour = "#EB8055FF", size = 2, alpha = 0.8) + #"#F9A242FF"
-  geom_segment(data = TAB_var, aes(xend=RDA1, yend=RDA2, x=0, y=0), colour="black", linewidth=0.15, linetype=1, arrow=arrow(length = unit(0.02, "npc"))) +
-  geom_text(data = TAB_var, aes(x=1.1*RDA1, y=1.1*RDA2, label = row.names(TAB_var)), size = 2.5, family = "Times") +
-  xlab("RDA 1 (XX%)") + ylab("RDA 2 (XX%)") +
-  facet_wrap(~"Adaptively not really enriched RDA space") +
-  guides(color=guide_legend(title="Locus type")) +
-  theme_bw(base_size = 11, base_family = "Times") +
-  theme(panel.grid = element_blank(), plot.background = element_blank(), panel.background = element_blank(), strip.text = element_text(size=11))
-
-ggsave("results/RDA_environmental_only_outlier_biplot.png")
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/06.genomic_offset/results/*bio5.15.18.rds /Users/ericarobertson/Desktop/BANS_Pub/analysis/05.genomic_offset/scratch/RDA_output/
 ```
 
 ## Genomic Offset
 
 ```{r}
 library(RColorBrewer)
-RDA_proj_offset <- readRDS("RDA_proj_offset_all_loci_table.rds")
+#2041-2070 or 2071-2100
+#ssp126 or ssp370 or ssp585
+
+data.set <- "2071-2100_ssp585"
+RDA_proj_offset <- readRDS(paste0("../scratch/RDA_output/RDA_proj_offset_all_loci_table_",data.set,"_bio5.15.18.rds"))
 
 ## Projecting genomic offset on a map
 colors <- c(colorRampPalette(brewer.pal(11, "Spectral")[6:5])(2), colorRampPalette(brewer.pal(11, "Spectral")[4:3])(2), colorRampPalette(brewer.pal(11, "Spectral")[2:1])(3))
@@ -168,6 +186,41 @@ countries <- ne_download(scale = 10, type = "admin_0_boundary_lines_land", categ
 states <- ne_download(scale = 10, type = "admin_1_states_provinces_lines", category = "cultural", returnclass = "sf")
 ocean <- ne_download(scale = 10, type = "ocean", category = "physical", returnclass = "sf")
 lakes <- ne_download(scale = 10, type = "lakes", category = "physical", returnclass = "sf")
+
+#---------- Histogram -------
+h <- ggplot(RDA_proj_offset, aes(Global_offset)) +
+  geom_histogram(
+    aes(fill = after_stat(x)),
+    bins = 40,
+    color = "grey30"
+  ) +
+  scale_fill_gradientn(
+    colours = rev(brewer.pal(11, "Spectral")),
+    limits = c(0, 1),
+    oob = scales::squish,
+    name = "Genomic offset")+
+  scale_y_sqrt() +
+  labs(
+    x = "Genomic Offset",
+    y = "Frequency"
+  ) +
+  theme_classic()
+
+png(
+  paste0("../figures/histograms/GO_all_", data.set, "_bio5.15.18.png"),
+  width = 1800,
+  height = 1200,
+  res = 300
+)
+print(h)
+
+dev.off()
+
+#---------- Full Map -------
+
+RDA_proj_offset_tight <- RDA_proj_offset %>% filter(Global_offset<1.0)
+RDA_proj_offset_top <- RDA_proj_offset %>% filter(Global_offset>1.0)
+
 
 RDA_GO <- ggplot() +
   geom_sf(data = ocean, fill = "#bddbe6", color = NA) +
@@ -182,9 +235,12 @@ RDA_GO <- ggplot() +
   geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225, alpha = 0.6) +
   scale_fill_gradientn(
     colours = rev(brewer.pal(11, "Spectral")),
-    name = "Genomic offset"
-  ) +
-  coord_sf(xlim = range(RDA_proj_offset$x), ylim = range(RDA_proj_offset$y), expand = FALSE) +
+    limits = c(0, 1),
+    oob = scales::squish,
+    name = "Genomic offset")+
+  # coord_sf(xlim = range(RDA_proj_offset$x)+10, ylim = range(RDA_proj_offset$y)+10, expand = FALSE) +
+  coord_sf(xlim=c(-170, -55),
+            ylim = c(27, 75))+
   theme_bw(base_size = 11, base_family = "Times") +
   theme(
   panel.grid = element_blank(),
@@ -194,32 +250,65 @@ RDA_GO <- ggplot() +
   legend.background = element_rect(fill = "white", color = "black"),
   legend.key.height = unit(0.35, "cm"),
   legend.key.width  = unit(0.35, "cm")
-)
-  labs(title = "Bank Swallow breeding range | ClimateNA 2071–2100",
-       subtitle = "GFDL-ESM4 SSP370",
-       fill = "Genomic offset")
+)+
+  labs(fill = "Genomic offset")
 
-RDA_GO
+# RDA_GO
+png.name <- paste0("../figures/offset_maps/full_RDA_genomic_offset_all_loci_table_",data.set,"_bio5.15.18_clipped_scale_newext_full.png")
+ggsave(plot = RDA_GO, png.name, width = 7, height=4.5)
 
-ggsave(plot = RDA_GO, "results/full_RDA_genomic_offset_all_loci_2100_internallegend.png", width = 7, height=4.5)
+pdf.name <- paste0("../figures/offset_maps/full_RDA_genomic_offset_all_loci_table_",data.set,"_bio5.15.18_newext_full.pdf")
+pdf(pdf.name, width = 7, height=4.5)
+print(RDA_GO)
+dev.off()
 ```
 
-# GO PER ESU Plots
 ```{r}
-library(sf)
-RDA_proj_offset <- readRDS("RDA_proj_offset_all_loci_table.rds")
-ESU6_polygons <- st_read("../05.predictors_of_decline/BANS_ESU_K6_polygons_update_thresh45.shp")
-ESU6_polygons$Cluster <- factor(
-  ESU6_polygons$Cluster,
-  levels = c("ESU1","ESU2","ESU3","ESU4","ESU5","ESU6"),
-  labels = c(
-    "Interior West",
-    "Mackenzie Basin",
-    "Pacific Coastal",
-    "Newfoundland",
-    "Alaska–Northwest",
-    "East Coastal"
+RDA_GO_noleg <- ggplot() +
+  geom_sf(data = ocean, fill = "#bddbe6", color = NA) +
+  geom_sf(data = lakes, fill = "#bddbe6", color = NA) +
+  geom_raster(
+    data = RDA_proj_offset_tight,
+    aes(x = x, y = y, fill = Global_offset)
+  ) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225, alpha = 0.6) +
+  scale_fill_gradientn(
+    colours = rev(brewer.pal(11, "Spectral")),
+    limits = c(0, 1),
+    oob = scales::squish,
+    name = "Genomic offset")+
+  # coord_sf(xlim = range(RDA_proj_offset$x)+10, ylim = range(RDA_proj_offset$y)+10, expand = FALSE) +
+  coord_sf(xlim=c(-170, -55),
+            ylim = c(27, 75))+
+  theme_bw(base_size = 11, base_family = "Times") +
+  theme(
+  panel.grid = element_blank(),
+  strip.text = element_text(size = 11),
+  legend.position = "none")
+
+ggsave(plot = RDA_GO_noleg, "../figures/offset_maps/full_RDA_genomic_offset_all_loci_table_2071-2100_ssp370_bio5.15.18_no_legend.png", width = 7, height=4.5)
+```
+
+# GO PER AU Plots
+```{r}
+RDA_proj_offset <- readRDS("../scratch/RDA_output/RDA_proj_offset_all_loci_table_2071-2100_ssp370_bio5.15.18.rds")
+AU3_polygons <- st_read("../../07.adaptive_analysis/outputs/BANS_AU_polygons_thresh.4_K3.shp")
+
+CU_names_ref <- data.frame(
+  AU = c("AU1", "AU2", "AU3"),
+  Name = c(
+    "Western",
+    "Eastern",
+    "Northern"
   )
+)
+AU3_polygons$Cluster <- factor(
+  AU3_polygons$Cluster,
+  levels = CU_names_ref$AU,
+  labels = CU_names_ref$Name
 )
 
 pts <- st_as_sf(
@@ -229,27 +318,31 @@ pts <- st_as_sf(
   remove = FALSE
 )
 
-esu <- st_transform(ESU6_polygons, 4326)
+esu <- st_transform(AU3_polygons, 4326)
 
-# 3) join: assigns each point an ESU id
+#assigns each point an ESU id
 pts_esu <- st_join(pts, esu[, c("Cluster")], join = st_within, left = FALSE)
-saveRDS(pts_esu, "pts_ESU6.rds")
+saveRDS(pts_esu, "../scratch/pts_AU_K3_all.rds")
 
-# 4) summarize to ESU-level offset
+pts_esu <- readRDS("../scratch/pts_AU_K3_all.rds")
+
+#summarize to ESU-level offset
 esu_offset <- pts_esu %>%
   st_drop_geometry() %>%
-  group_by(Cluster, Date) %>%
+  group_by(Cluster) %>%
   summarize(
     n_cells = n(),
     mean_offset   = mean(Global_offset, na.rm = TRUE),
     median_offset = median(Global_offset, na.rm = TRUE),
     p05 = quantile(Global_offset, 0.05, na.rm = TRUE),
     p95 = quantile(Global_offset, 0.95, na.rm = TRUE),
+    min = min(Global_offset, na.rm = TRUE),
+    max = max(Global_offset, na.rm = TRUE),
     .groups = "drop"
   )
 
-esu_offset
-saveRDS(esu_offset, "ESU6_offset_stats.rds")
+esu_offset 
+saveRDS(esu_offset, "../scratch/AU_K3_offset_stats.rds")
 ```
 
 ```{r}
@@ -257,16 +350,19 @@ library(dplyr)
 library(ggplot2)
 library(ggdist)
 
-names(cols) <- c(
-  "Interior West",
-  "Mackenzie Basin",
-  "Pacific Coastal",
-  "Newfoundland",
-  "Alaska–Northwest",
-  "East Coastal"
-) 
+cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K3.rds")
+CU_names_ref <- data.frame(
+  AU = c("AU1", "AU2", "AU3"),
+  Name = c(
+    "Western",
+    "Eastern",
+    "Northern"
+  )
+)
+pts_esu <- readRDS("../scratch/pts_AU_K3.rds")
+names(cols) <- CU_names_ref$Name
 # per-cell offsets (NOT summarized)
-cells <- readRDS("pts_ESU6.rds") %>%
+cells <- pts_esu %>%
   st_drop_geometry() %>%
   mutate(Cluster = factor(Cluster, levels = names(cols)))  # keep your ESU order
 
@@ -278,68 +374,70 @@ cells_subsample_1m <- cells[
   sample.int(nrow(cells), 1e6),
 ]
 
-raincloud <- ggplot(cells, aes(x = Cluster, y = Global_offset, color = Cluster, fill = Cluster)) +
-  # half density "trace" (one-sided)
-  stat_halfeye(
-    side = "right",
-    adjust = 2,          # try 1.2–2.5
-    width = 1.3,
-    alpha = 0.75,
-    .width = 0,            # <-- removes interval/box-looking part
-    point_colour = NA,
-    position = position_nudge(x = 0.1)  # <-- shifts halfeye right
-  ) +
-  # boxplot on top
-  geom_boxplot(
-    width = 0.18,
-    outlier.shape = NA,
-    alpha = 0.75,
-    color = "black",
-    position = position_nudge(x = -0.05),
-    linewidth=0.4
-  ) +
-  scale_fill_manual(values = cols) +
-  scale_color_manual(values = cols) +
-  labs(
-    title = "Within-ESU Distribution of Genomic Offset | 2071–2100",
-    x = NULL,
-    y = "Genomic Offset"
-  ) +
-  theme_classic() +
-  theme(
-    axis.text.x = element_text(size = 8, angle = 90, hjust = 1),
-    legend.position = "none"
-  )
-
-#raincloud
-ggsave(plot=raincloud, "results/GO_per_ESU_raincloud.png", width = 6, height = 4.5, dpi = 300)
+# raincloud <- ggplot(cells, aes(x = Cluster, y = Global_offset, color = Cluster, fill = Cluster)) +
+#   # half density "trace" (one-sided)
+#   stat_halfeye(
+#     side = "right",
+#     adjust = 2,          # try 1.2–2.5
+#     width = 1.3,
+#     alpha = 0.75,
+#     .width = 0,            # <-- removes interval/box-looking part
+#     point_colour = NA,
+#     position = position_nudge(x = 0.1)  # <-- shifts halfeye right
+#   ) +
+#   # boxplot on top
+#   geom_boxplot(
+#     width = 0.18,
+#     outlier.shape = NA,
+#     alpha = 0.75,
+#     color = "black",
+#     position = position_nudge(x = -0.05),
+#     linewidth=0.4
+#   ) +
+#   scale_fill_manual(values = cols) +
+#   scale_color_manual(values = cols) +
+#   labs(
+#     title = "Within-ESU Distribution of Genomic Offset | 2071–2100",
+#     x = NULL,
+#     y = "Genomic Offset"
+#   ) +
+#   theme_classic() +
+#   theme(
+#     axis.text.x = element_text(size = 8, angle = 90, hjust = 1),
+#     legend.position = "none"
+#   )
+# 
+# #raincloud
+# ggsave(plot=raincloud, "../figures/GO_per_ESU_AU_K3_raincloud.png", width = 6, height = 4.5, dpi = 300)
 
 ######### MORE SPACE VERSION
-esu_order <- c(
-  "Interior West",
-  "Pacific Coastal",
-  "Newfoundland",
-  "Alaska–Northwest",
-  "East Coastal",
-  "Mackenzie Basin"
+library(ggbreak)
+library(ggpubr)
+
+desired_order <- c(
+  "Eastern",
+  "Northern",
+  "Western"
 )
 
 cells <- cells %>%
-  mutate(Cluster = factor(Cluster, levels = esu_order))
+  mutate(Cluster = factor(Cluster, levels = CU_names_ref$Name))
+
+cells$Cluster <- factor(
+  cells$Cluster,
+  levels = desired_order
+)
 
 # 2) optional: per-ESU "caps" so the spiky ones don't spill
 halfeye_widths <- c(
-  "Interior West"   = .5,
-  "Pacific Coastal" = .5,
-  "Newfoundland"    = .5,   # shrink these two
-  "Alaska–Northwest"= .5,
-  "East Coastal"    = .5,
-  "Mackenzie Basin" = .5
+  "Eastern"   = .5,
+  "Northern" = .5,
+  "Western"    = .5
 )
 
 p <- ggplot(cells, aes(x = Cluster, y = Global_offset, fill = Cluster)) +
   scale_fill_manual(values = cols) +
-  scale_x_discrete(expand = expansion(mult = c(0.02, 0.02))) +
+scale_x_discrete(expand = expansion(add = c(0.4, 1.0)))+
   labs(
     title = "Within-ESU Distribution of Genomic Offset | 2071–2100",
     x = NULL,
@@ -351,7 +449,7 @@ p <- ggplot(cells, aes(x = Cluster, y = Global_offset, fill = Cluster)) +
     axis.ticks.x = element_blank(),
     legend.position = "none"
   )
-for (esu in esu_order) {
+for (esu in CU_names_ref$Name) {
   d_esu <- filter(cells, Cluster == esu)
 
   p <- p +
@@ -375,77 +473,44 @@ for (esu in esu_order) {
       position = position_nudge(x = 0.10)
     )
 }
+compress_above_one <- scales::trans_new(
+  name = "compress_above_one",
+  transform = function(x) {
+    ifelse(x <= 1, x, 1 + (x - 1) * 0.15)
+  },
+  inverse = function(x) {
+    ifelse(x <= 1, x, 1 + (x - 1) / 0.25)
+  }
+)
+comparisons <- list(
+  c("Western", "Northern"),
+  c("Western", "Eastern"),
+  c("Northern", "Eastern")
+)
 
-p
-
-
-ggsave(plot=p, "results/GO_per_ESU_raincloud_wide.png", width = 8, height = 2)
-```
-
-```{r}
-esu_offset <- readRDS("ESU6_offset_stats.rds")
-esu_long <- esu_offset %>%
-  pivot_longer(
-    cols = c(mean_offset, median_offset),
-    names_to = "Metric",
-    values_to = "Offset"
-  )
-
-
-cols <- readRDS("../02.5.delineate_ESUs/figures/colors/pcadmix_ESU_6_colors_2.rds")
-names(cols) <- c(
-  "Interior West",
-  "Mackenzie Basin",
-  "Pacific Coastal",
-  "Newfoundland",
-  "Alaska–Northwest",
-  "East Coastal"
-) 
-
-ggplot(esu_offset, aes(x = Cluster, y = mean_offset, color=Cluster)) +
-  geom_linerange(aes(ymin = p05, ymax = p95),
-                 linewidth = 1.1,
-                 color = "gray50") +
-  geom_point(size = 3) +
-  theme_bw(base_size = 12) +
-  scale_color_manual(values=cols)+
-  labs(
-    title = "Within-ESU Distribution of Genomic Offset | 2071-2100",
-    subtitle = "Points = mean, bars = 5th–95th percentile",
-    y = "Genomic Offset",
-    x = "ESU"
+p <- p +
+  scale_y_continuous(
+    trans = compress_above_one,
+    breaks = c(0, 0.25, 0.5, 0.75, 1, 2),
+    name = "Genomic offset"
   )+
-  theme(axis.text.x = element_text(size=8, 
-                             angle =45,
-                             hjust = 1),
-        legend.position = "none")
-ggsave("results/GO_per_ESU_mean_bar.png")
+  scale_x_discrete(
+    limits = c("Eastern", "Northern", "Western")
+  )
+
+
+ggsave(plot=p, "../figures/GO_per_AU_K3_raincloud_wide_3.png", width = 8, height = 2)
+
+pdf("../figures/GO_per_AU_K3_raincloud_wide.pdf", width = 8, height = 2)
+print(p)
+dev.off()
 ```
 
-```{r}
-ggplot(
-  pts_esu,
-  aes(x = Cluster, y = Global_offset)
-) +
-  geom_violin(outlier.size = 0.2) +
-  facet_wrap(~ Date) +
-  theme_bw(base_size = 12) +
-  labs(
-    title = "Distribution of Genomic Offset by ESU",
-    y = "Genomic Offset",
-    x = "Evolutionarily Significant Unit"
-  ) +
-  theme(
-    plot.title = element_text(face = "bold"),
-    panel.grid = element_blank(),
-    legend.position = "none"
-  )
-ggsave("results/GO_per_ESU_mean_bar.png")
-```
+
 # GO with ESU outlines
 ```{r}
 library(RColorBrewer)
-RDA_proj_offset <- readRDS("RDA_proj_offset_all_loci_table.rds")
+RDA_proj_offset <- readRDS("../scratch/RDA_output/RDA_proj_offset_all_loci_table_2071-2100_ssp370_bio5.15.18.rds")
 
 ## Projecting genomic offset on a map
 colors <- c(colorRampPalette(brewer.pal(11, "Spectral")[6:5])(2), colorRampPalette(brewer.pal(11, "Spectral")[4:3])(2), colorRampPalette(brewer.pal(11, "Spectral")[2:1])(3))
@@ -456,11 +521,65 @@ states <- ne_download(scale = 10, type = "admin_1_states_provinces_lines", categ
 ocean <- ne_download(scale = 10, type = "ocean", category = "physical", returnclass = "sf")
 lakes <- ne_download(scale = 10, type = "lakes", category = "physical", returnclass = "sf")
 
-genoscape_polygons <- st_read("../BANS_ESU_K6_polygons_update_thresh45.shp")
-bb <- readRDS("../05.predictors_of_decline/figures/bounding_box_breeedingNA.rds")
+genoscape_polygons <- st_read("../../07.adaptive_analysis/outputs/BANS_AU_polygons_thresh.55_K3.shp")
+library(concaveman)
+
+bad_cluster <- "AU1"
+
+split_au1 <- genoscape_polygons %>%
+  filter(Cluster == bad_cluster) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop") %>%
+  st_cast("POLYGON") %>%
+  mutate(
+    piece_area = as.numeric(st_area(geometry)),
+    piece_id = row_number()
+  )
+
+split_au1_extra <- split_au1 %>%
+  filter(piece_id %in% 1:9) %>%
+  mutate(Cluster = "AU1_1")
+
+split_au1_main <- split_au1 %>%
+  filter(!piece_id %in% 1:9) %>%
+  mutate(Cluster = "AU1_2")
+
+genoscape_polygons_split <- bind_rows(
+  genoscape_polygons %>% filter(Cluster != bad_cluster),
+  split_au1_extra,
+  split_au1_main
+)
+
+genoscape_polygons_split <- genoscape_polygons_split %>%
+  group_by(Cluster) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop")
+
+genoscape_blob <- genoscape_polygons_split %>%
+  group_by(Cluster) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop") %>%
+  mutate(
+    geometry = st_concave_hull(geometry, ratio = 0.1)
+  )
 
 library(ggnewscale)
-cols <- readRDS("../02.5.delineate_ESUs/figures/colors/pcadmix_ESU_6_colors_2.rds")
+cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K3.rds")
+cols <- c(
+  "AU1_1" = "#2589BD",
+  "AU1_2" = "#2589BD",
+  "AU2" = "#FF5A5F",
+  "AU3" = "#8ACB88"
+)
+
+GO_cols <- c(
+  "#9E0142",  # dark red
+  "#D53E4F",  # red
+  "#F46D43",  # orange-red
+  "#FDAE61",  # orange
+  "#FEE08B",  # yellow
+  "#FFFFBF",  # pale yellow
+  "#E6F598",  # yellow-green
+  "#ABDDA4",  # light green
+  "#66C2A5"   # green
+)
 
 RDA_GO <- ggplot() +
   geom_sf(data = ocean, fill = "#bddbe6", color = NA) +
@@ -469,29 +588,67 @@ RDA_GO <- ggplot() +
     data = RDA_proj_offset,
     aes(x = x, y = y, fill = Global_offset)) +
   scale_fill_gradientn(
-    colours = rev(brewer.pal(11, "Spectral")),
-    name = "Genomic offset") +
+    colours = rev(GO_cols),
+    limits = c(0, 1),
+    oob = scales::squish,
+    name = "Genomic offset")+
   geom_sf(data = countries, fill = NA, linewidth = 0.25) +
   geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
   geom_sf(data = states, fill = NA, linewidth = 0.1225) +
   ggnewscale::new_scale_fill() +  # reset fill scale for the polygons (even if we only use color)
   ggspatial::layer_spatial(
-    genoscape_polygons,
-    aes(color = factor(Cluster), fill = NA)) +
-  scale_color_manual(values = cols, breaks = names(cols), name = "ESU") +
-  #scale_fill_manual(values = cols, breaks = names(cols), name = "ESU")+
+    genoscape_polygons_split,
+    aes(color = factor(Cluster)),
+    fill = NA,
+    linewidth=.5) +
+  scale_color_manual(values = cols, breaks = names(cols), name = "AU") +
   guides(fill = "none")+
-  coord_sf(xlim = range(RDA_proj_offset$x), ylim = range(RDA_proj_offset$y), expand = FALSE) +
-  labs(
-    title = "Bank Swallow breeding range | ClimateNA 2071–2100",
-    subtitle = "GFDL-ESM4 SSP370"
-  ) +
+  coord_sf(xlim=c(-170, -55),
+            ylim = c(27, 75))+
   theme_bw(base_size = 11, base_family = "Times") +
   theme(
     panel.grid = element_blank(),
     strip.text = element_text(size = 11)
   )
 
-ggsave(plot = RDA_GO, "results/full_RDA_genomic_offset_all_loci_2100_ESUoverlaid.png", width = 7, height=4.5)
+ggsave(plot = RDA_GO, "../figures/GO_2071-2100_ssp370_AUoverlaid_3.png", width = 7, height=4.5)
+
+pdf("../figures/GO_2071-2100_ssp370_AUoverlaid_3.pdf", width = 7, height=4.5)
+print(RDA_GO)
+dev.off()
+
+
+RDA_GO_noleg <- ggplot() +
+  geom_sf(data = ocean, fill = "#bddbe6", color = NA) +
+  geom_sf(data = lakes, fill = "#bddbe6", color = NA) +
+  geom_raster(
+    data = RDA_proj_offset,
+    aes(x = x, y = y, fill = Global_offset)) +
+  scale_fill_gradientn(
+    colours = rev(GO_cols),
+    limits = c(0, 1),
+    oob = scales::squish,
+    name = "Genomic offset")+
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  ggnewscale::new_scale_fill() +  # reset fill scale for the polygons (even if we only use color)
+  ggspatial::layer_spatial(
+    genoscape_polygons_split,
+    aes(color = factor(Cluster)),
+    fill = NA,
+    linewidth=.5) +
+  scale_color_manual(values = cols, breaks = names(cols), name = "AU") +
+  guides(fill = "none")+
+  coord_sf(xlim=c(-170, -55),
+            ylim = c(27, 75))+
+  theme_bw(base_size = 11, base_family = "Times") +
+  theme(
+    panel.grid = element_blank(),
+    strip.text = element_text(size = 11),
+    legend.position="none"
+  )
+
+ggsave(plot = RDA_GO_noleg, "../figures/GO_2071-2100_ssp370_AUoverlaid_noleg.png", width = 7, height=4.5)
 ```
 

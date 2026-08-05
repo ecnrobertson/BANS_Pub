@@ -48,12 +48,7 @@ bio_stack <- rast(bio_list)
 # Individual data
 all <- read_csv("../../../raw_data/BANS_all_sample_data_shifted.csv")
 
-samples <- read.csv("../../03.delineate_ESUs/scratch/BANS_unrel_sample_list_short.txt") %>% rename(BGP_ID=IID)
-
-ind_filtered <- all %>% 
-  filter(BGP_ID %in% samples$BGP_ID)
-
-meta <- ind_filtered %>%
+meta <- all %>%
   dplyr::select(BGP_ID, Long, Lat, State, CityTown)
 
 # Your coordinates
@@ -69,15 +64,6 @@ extracted.xy <- cbind(coords, extracted)
 env_data <- extracted.xy %>%
   rename_with(~ str_replace_all(., "CHELSA_|_1981-2010_V.2.1", ""))
 
-env_data %>% write.table("../scratch/BANS.CHELSA.txt",
-              row.names = FALSE, quote = FALSE, sep = "\t")
-```
-
-
-```{r}
-## save worldclim
-meta.env <- read.delim("../scratch/BANS.CHELSA.txt")
-left_join(meta.env %>% dplyr::select(-ID), extracted.xy %>% dplyr::select(-Long,-Lat, -ID), by="BGP_ID") %>%
-  write.table("../scratch/BANS.CHELSA.landscape.txt",
+env_data %>% write.table("../output/BANS.CHELSA_all.txt",
               row.names = FALSE, quote = FALSE, sep = "\t")
 ```
