@@ -8,22 +8,42 @@ analysis/01.fastq_processing/scratch/pca_inputs
 analysis/01.fastq_processing/scratch/pca_outputs
 
 #03.delineate_ESUs
+analysis/03.delineate_ESUs/figures
 analysis/03.delineate_ESUs/scratch/admix_output
 analysis/03.delineate_ESUs/scratch/genoscape_output
 analysis/03.delineate_ESUs/scratch/ngsRelate
 analysis/03.delineate_ESUs/scratch/PCA
 analysis/03.delineate_ESUs/scratch/pcadmix_output
+analysis/03.delineate_ESUs/scratch/BANS_unrel_sample_list.txt
+analysis/03.delineate_ESUs/scratch/*.fam
+analysis/03.delineate_ESUs/scratch/ESU3_sample_list*
 
 #04.predictors_of_decline
+analysis/04.predictors_of_decline/figures
 analysis/04.predictors_of_decline/scratch/BBS_data
 analysis/04.predictors_of_decline/scratch/genoscape_stars
 analysis/04.predictors_of_decline/scratch/spatial_predictors
-analysis/04.predictors_of_decline/outputs/GAM_outputs/function_out
+analysis/04.predictors_of_decline/outputs/GAM_outputs/
+analysis/04.predictors_of_decline/outputs/GAM_outputs_55/function_out/AU_K3/*.rds
 
 #05.genomic_offset
+analysis/05.genomic_offset/figures
 analysis/05.genomic_offset/scratch/RDA_output
 analysis/05.genomic_offset/scratch/spatial_files
+analysis/05.genomic_offset/scratch/AU_K3_offset_stats.rds
+analysis/05.genomic_offset/scratch/Bans*
+analysis/05.genomic_offset/scratch/BANS.CHELSA*
+analysis/05.genomic_offset/scratch/G5_offset_stats.rds
+analysis/05.genomic_offset/scratch/pts_AU*
 
 #06.final_figures
-analysis/06.final_figures
+analysis/06.final_figures/figures_output
+analysis/06.final_figures/old_outputs
+analysis/06.final_figures/scratch
+
+#07.adaptive_analysis
+analysis/07.adaptive_analysis/figures
+analysis/07.adaptive_analysis/scratch
+analysis/07.adaptive_analysis/outputs
+
 
