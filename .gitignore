@@ -35,6 +35,7 @@ analysis/05.genomic_offset/scratch/Bans*
 analysis/05.genomic_offset/scratch/BANS.CHELSA*
 analysis/05.genomic_offset/scratch/G5_offset_stats.rds
 analysis/05.genomic_offset/scratch/pts_AU*
+analysis/05.genomic_offset/scratch/pts_G5.rds
 
 #06.final_figures
 analysis/06.final_figures/figures_output
