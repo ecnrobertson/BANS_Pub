@@ -1,0 +1,13 @@
+file,scheme,model_type,variable,AIC,delta,best
+../outputs/GAM_outputs_55/function_out/AU_K3/gam_null2.rds,AU_K3,gam,null2,34918.639858375915,0,TRUE
+../outputs/GAM_outputs_55/function_out/AU_K3/modG.rds,AU_K3,modG,NA,33196.20692515156,0,TRUE
+../outputs/GAM_outputs_55/function_out/AU_K3/modGS_tmin.rds,AU_K3,modGS,tmin,32721.979138594495,0,TRUE
+../outputs/GAM_outputs_55/function_out/AU_K3/modGS_tmax.rds,AU_K3,modGS,tmax,32848.89561924507,126.91648065057598,FALSE
+../outputs/GAM_outputs_55/function_out/AU_K3/modGS_ws.rds,AU_K3,modGS,ws,33044.06240392437,322.08326532987485,FALSE
+../outputs/GAM_outputs_55/function_out/AU_K3/modGS_soil.rds,AU_K3,modGS,soil,33046.78975359194,324.81061499744465,FALSE
+../outputs/GAM_outputs_55/function_out/AU_K3/modGS_ppt.rds,AU_K3,modGS,ppt,33104.48892505178,382.5097864572854,FALSE
+../outputs/GAM_outputs_55/function_out/AU_K3/modS_tmin.rds,AU_K3,modS,tmin,32997.67640253669,0,TRUE
+../outputs/GAM_outputs_55/function_out/AU_K3/modS_tmax.rds,AU_K3,modS,tmax,33077.27233357568,79.59593103899533,FALSE
+../outputs/GAM_outputs_55/function_out/AU_K3/modS_ws.rds,AU_K3,modS,ws,33133.23013510111,135.55373256442545,FALSE
+../outputs/GAM_outputs_55/function_out/AU_K3/modS_ppt.rds,AU_K3,modS,ppt,33148.705676228616,151.02927369192912,FALSE
+../outputs/GAM_outputs_55/function_out/AU_K3/modS_soil.rds,AU_K3,modS,soil,33225.76047653143,228.08407399474527,FALSE

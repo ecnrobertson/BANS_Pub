@@ -27,7 +27,7 @@ Note here that one of the ESUs doesn't have trend data available for it (locatio
 ## Initial Data visualization
 Just doing one of the variables for these, tmax, which I think will be important.
 ```{r}
-data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_G4_threshold45.csv")
+data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K5_threshold4.csv")
 
 #only data where I had a good ESU assignment
 clean.data <- data %>% filter(!is.na(ESU))
@@ -36,7 +36,7 @@ nrow(clean.data)
 clean.data$ESU <- factor(clean.data$ESU)
 
 table(clean.data$ESU)
-genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_ESU_polygons_thresh45_G4.shp")
+genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_G4.shp")
 ggplot() +
   ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
   theme_void() + 
@@ -636,6 +636,12 @@ vis_out <- plot_esu_data_vis(
 ### running all the models
 So we can change the input vars, the k parameters for the variables (based on the null model parameterization), and the k value for the number of ESUs (increase it to 4 for four groups).
 ```{r}
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") + s(soil_june_delta, k = 20, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 15, bs="tp") + s(ws_june_delta, k = 15, bs="tp"), data=clean.data, method="REML")
+
+mgcv::gam.check(gam_null)
+```
+
+```{r}
 source("GAM_modeling_and_summary.R")
 fit_esugams_and_summarize(
   data_path = "../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_G5_threshold45.csv",
@@ -649,16 +655,16 @@ fit_esugams_and_summarize(
     tmin="tmin_june_delta",
     ws = "ws_june_delta"
   ),
-  k_global = c(ppt=15, soil=15, tmax=15, tmin=15, ws=15),
+  k_global = c(ppt=15, soil=20, tmax=15, tmin=15, ws=15),
   k_fs = 3
 )
 ```
 
-## GM5
-### Initial Data visualization
+# ADAPTIVE OPTION
+## Initial Data visualization
 Just doing one of the variables for these, tmax, which I think will be important.s
 ```{r}
-data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM5_threshold45.csv")
+data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold55.csv")
 
 #only data where I had a good ESU assignment
 clean.data <- data %>% filter(!is.na(ESU))
@@ -668,7 +674,7 @@ clean.data$ESU <- factor(clean.data$ESU)
 
 table(clean.data$ESU)
 
-genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_GM5.shp")
+genoscape_polygons <- st_read("../../07.adaptive_analysis/outputs/BANS_AU_polygons_thresh.55_K3.shp")
 ggplot() +
   ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
   theme_void() + 
@@ -677,9 +683,16 @@ ggplot() +
   xlim = c(bb["xmin"], bb["xmax"]),
   ylim = c(bb["ymin"], bb["ymax"]),
   expand = FALSE)
-ggsave("../figures/BANS_CU_GM5_polygons_reference.png")
+ggsave("../figures/BANS_AU_K3_polygons_reference.png")
 ```
 Drops ESU 2 (site F) because there's no trend data available there.
+
+Base null model for everything:
+```{r}
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") + s(soil_june_delta, k = 15, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 15, bs="tp") + s(ws_june_delta, k = 15, bs="tp"), data=clean.data, method="REML")
+
+mgcv::gam.check(gam_null)
+```
 
 Data vis function for plotting
 ```{r}
@@ -689,7 +702,7 @@ esus <- as.character(unique(clean.data$ESU))
 
 vis_out <- plot_esu_data_vis(
   clean.data = clean.data,
-  out_prefix = "CU_GM5",
+  out_prefix = "AU_K3",
   out_dir = "../figures/data_vis",
   esus_for_climate = esus
 )
@@ -700,9 +713,9 @@ So we can change the input vars, the k parameters for the variables (based on th
 ```{r}
 source("GAM_modeling_and_summary.R")
 fit_esugams_and_summarize(
-  data_path = "../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM5_threshold45.csv",
-  out_dir   = "../outputs/GAM_outputs/function_out",
-  run_name  = "GM5",
+  data_path = "../scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold55.csv",
+  out_dir   = "../outputs/GAM_outputs_55/function_out/",
+  run_name  = "AU_K3",
   focal_vars=c("ppt","soil", "tmax", "tmin", "ws"),
   var_map = c(
     ppt = "ppt_june_delta",
@@ -716,65 +729,61 @@ fit_esugams_and_summarize(
 )
 ```
 
-## GM6
-### Initial Data visualization
-Just doing one of the variables for these, tmax, which I think will be important.s
+# DO THE CURVES DIFFER?
 ```{r}
-data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM6_threshold45.csv")
-
-#only data where I had a good ESU assignment
-clean.data <- data %>% filter(!is.na(ESU))
-nrow(clean.data)
-
-clean.data$ESU <- factor(clean.data$ESU)
-
-table(clean.data$ESU)
-
-genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_GM6.shp")
-ggplot() +
-  ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
-  theme_void() + 
-  coord_sf(
-  crs = st_crs(lamproj),
-  xlim = c(bb["xmin"], bb["xmax"]),
-  ylim = c(bb["ymin"], bb["ymax"]),
-  expand = FALSE)
-ggsave("../figures/BANS_CU_GM6_polygons_reference.png")
-```
-Drops ESU 2 (site F) because there's no trend data available there.
-
-Data vis function for plotting
-```{r}
-source("plot_esu_data_vis.R")
-
-esus <- as.character(unique(clean.data$ESU))
-
-vis_out <- plot_esu_data_vis(
-  clean.data = clean.data,
-  out_prefix = "CU_GM6",
-  out_dir = "../figures/data_vis",
-  esus_for_climate = esus
+modGS_tmax <- readRDS("../outputs/GAM_outputs/function_out/AU_K3/modGS_tmax.rds")
+clean.data$AU <- factor(clean.data$AU)
+base_grid <- data.frame(
+  tmax_june_delta = seq(
+    min(clean.data$tmax_june_delta, na.rm = TRUE),
+    max(clean.data$tmax_june_delta, na.rm = TRUE),
+    length.out = 100
+  )
 )
+
+base_grid$ppt_june_delta  <- median(clean.data$ppt_june_delta,  na.rm = TRUE)
+base_grid$soil_june_delta <- median(clean.data$soil_june_delta, na.rm = TRUE)
+base_grid$tmin_june_delta <- median(clean.data$tmin_june_delta, na.rm = TRUE)
+base_grid$ws_june_delta <- median(clean.data$ws_june_delta, na.rm = TRUE)
+
+grid1 <- base_grid
+grid2 <- base_grid
+
+AU_levels <- levels(clean.data$AU)
+
+grid1$ESU <- factor(AU_levels[1], levels = AU_levels)
+grid2$ESU <- factor(AU_levels[2], levels = AU_levels)
+X1 <- predict(modGS_tmax, newdata = grid1, type = "lpmatrix")
+X2 <- predict(modGS_tmax, newdata = grid2, type = "lpmatrix")
+Xdiff <- X1 - X2
+beta <- coef(modGS_tmax)
+
+diff <- as.vector(Xdiff %*% beta)
+V <- vcov(modGS_tmax)
+
+se <- sqrt(rowSums((Xdiff %*% V) * Xdiff))
+lower <- diff - 1.96 * se
+upper <- diff + 1.96 * se
+out <- data.frame(
+    tmax = grid1$tmax_june_delta,
+    diff = diff,
+    lower = lower,
+    upper = upper
+)
+ggplot(out, aes(tmax, diff)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = .2) +
+    geom_line(size = 1) +
+    geom_hline(yintercept = 0, linetype = 2)
 ```
 
-### running all the models
-So we can change the input vars, the k parameters for the variables (based on the null model parameterization), and the k value for the number of ESUs (increase it to 4 for four groups).
 ```{r}
-source("GAM_modeling_and_summary.R")
-fit_esugams_and_summarize(
-  data_path = "../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM6_threshold45.csv",
-  out_dir   = "../outputs/GAM_outputs/function_out",
-  run_name  = "GM6",
-  focal_vars=c("ppt","soil", "tmax", "tmin", "ws"),
-  var_map = c(
-    ppt = "ppt_june_delta",
-    soil = "soil_june_delta",
-    tmax = "tmax_june_delta",
-    tmin="tmin_june_delta",
-    ws = "ws_june_delta"
-  ),
-  k_global = c(ppt=15, soil=15, tmax=15, tmin=15, ws=15),
-  k_fs = 3
+modGS_tmax <- readRDS("../outputs/GAM_outputs/function_out/AU_K3/modGS_tmax.rds")
+compare_smooths(modGS_tmax, select="s(tmax_june_delta,ESU)")
+
+difference_smooths(
+  modGS_tmax,
+  select = "s(tmax_june_delta,ESU)",
+  pair = c("AU1", "AU2")
 )
 ```
 # COMPARING MODELS
@@ -789,7 +798,7 @@ Model table with all the names and variables and grouping schemes... Need one fo
 source("build_model_tbl.R")
 
 model_tbl <- build_model_tbl(
-  base_dir = "../outputs/GAM_outputs/function_out"
+  base_dir = "../outputs/GAM_outputs_55/function_out"
 )
 
 dplyr::count(model_tbl, scheme, model_type, variable)
@@ -827,43 +836,14 @@ compare_variables_within_scheme <- function(aic_tbl) {
     dplyr::arrange(scheme, model_type, AIC) %>%
     dplyr::ungroup()
 }
-```
 
-## Across grouping schemes, for each model type and varaible, which scheme is the best?
-Groups by model_type and varaible and compares AIC across scheme.
-```{r}
-compare_schemes_within_variable <- function(aic_tbl) {
-  aic_tbl %>%
-    dplyr::group_by(model_type, variable) %>%
-    dplyr::mutate(
-      delta = AIC - min(AIC, na.rm = TRUE),
-      best = AIC == min(AIC, na.rm = TRUE)
-    ) %>%
-    dplyr::arrange(model_type, variable, AIC) %>%
-    dplyr::ungroup()
-}
-```
+aic_results <- compare_variables_within_scheme(aic_tbl)
+head(aic_results)
 
-## Loop and Wrapper
-```{r}
-compare_aic_both_ways <- function(aic_tbl) {
-  list(
-    within_scheme = compare_variables_within_scheme(aic_tbl),
-    across_scheme = compare_schemes_within_variable(aic_tbl)
-  )
-}
-
-aic_results <- compare_aic_both_ways(aic_tbl)
-
-dir.create("../outputs/GAM_outputs/model_comparisons", recursive = TRUE, showWarnings = FALSE)
+dir.create("../outputs/GAM_outputs_55/model_comparisons", recursive = TRUE, showWarnings = FALSE)
 
 write_csv(
-  aic_results$within_scheme,
-  "../outputs/GAM_outputs/model_comparisons/within_scheme.csv"
-)
-
-write_csv(
-  aic_results$across_scheme,
-  "../outputs/GAM_outputs/model_comparisons/across_scheme.csv"
+  aic_results,
+  "../outputs/GAM_outputs_55/model_comparisons/within_scheme.csv"
 )
 ```

@@ -225,15 +225,16 @@ trends_raster.proj <- rast("../scratch/spatial_predictors/eBird_trends_BANS_proj
 trends.df <- as.data.frame(trends_raster.proj, xy = TRUE)
 
 plot(trends_raster.proj)
+trends_polys <- terra::as.polygons(trends_raster.proj, dissolve = FALSE)
 ```
 # Genoscape/ESU assignment
 (Note, the following function were generated using ChatGPT based on the above written out code that I produced, interpretation of results in my own)
 ```{r}
 ## Splitting data up per ESU, this is a shape file with all four clusters
-source("rasterize_genoscape_polygons.R")f
+source("rasterize_genoscape_polygons.R")
 genoscape_out <- rasterize_genoscape_polygons(
-  genoscape_file = "../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_GM6.shp",
-  out_tif = "../scratch/genoscape_stars/genoscape_stars_rast_CU_GM6_threshold45.tif"
+  genoscape_file = "../../07.adaptive_analysis/outputs/BANS_AU_polygons_thresh.55_K3.shp",
+  out_tif = "../scratch/genoscape_stars/genoscape_stars_rast_AU_K3_threshold4.tif"
 )
 
 genoscape_rast <- genoscape_out$genoscape_rast
@@ -253,7 +254,7 @@ esu_layers <- lapply(vals, function(v) {
 })
 
 ESU_stack <- rast(esu_layers)
-names(ESU_stack) <- paste0("ESU", vals)
+names(ESU_stack) <- paste0("AU", vals)
 
 ESU_stack
 plot(ESU_stack)
@@ -279,7 +280,7 @@ ESU_by_trend <- q_by_trend %>%
   ) %>%
   ungroup()
 
-unique(ESU_by_trend$ESU)
+table(ESU_by_trend$ESU)
 ```
 
 ## ESU to data join
@@ -291,5 +292,5 @@ sp.data <- left_join(sp.data.xy, ESU_by_trend[c("ID", "ESU")], by = "ID")
 sp.data.clean <- sp.data %>% tidyr::drop_na()
 
 sp.data.clean %>%
-  write.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_GM6_threshold45.csv", row.names = FALSE)
+  write.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold55.csv", row.names = FALSE)
 ```
