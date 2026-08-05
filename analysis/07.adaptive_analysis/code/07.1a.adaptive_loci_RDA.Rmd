@@ -1,0 +1,1715 @@
+---
+title: "07.1a.adaptive_loci_RDA"
+output: html_document
+---
+# LIBRARIES
+```{r, message=F}
+library(pegas)
+library(ggplot2)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(RColorBrewer)
+library(ggpubr)
+library(vegan)
+library(robust)
+library(ggVennDiagram)
+library(cowplot)
+library(corrplot)
+library(data.table)
+library(tidyverse)
+library(adegenet)
+library(patchwork)
+library(viridis)
+```
+
+#INTRODUCTION
+The goal of this step is to identify adaptive loci using a GEA. These loci will then go into structure analyses to identify potential adaptive units and generally explore the adaptive structuring of the species. This is a separate, but related, process to the genomic offset analysis. The steps are as follows:
+
+1. identify relevant variables
+2. run GEA on all loci
+3. identify those loci that are associated with the environmental variables
+4. perform structure analyses on these loci (PCA, admixture, FEEMS?)
+
+Step 1: identify relevant variables
+The process here is the same as for the GEA that is the basis of the genomic offset analysis. For that reason, that code and process are documented under the genomic_offset step of analysis. The results from the RDA forward variable selection will also be applied here.
+
+Step 2: run GEA on all loci
+The next step is to run a GEA on all available loci using the variables selected. This is the complicated part. There are two GEA that can be applied, RDA or LFMM. RDA is the process being used to select variables, and the process being used to generate the genonomic offset, however it has it's limitations. Mainly, it cannot capture non-linear relationships. LFMM, or latent factor mixed modeling, is another commonly used approach. Typically, both are performed and the overlapping loci are considered the strongest candidate loci.
+
+Another complication in this step is whether or not to correct for population structure in the RDA (which would make it a partial RDA, LFMM does not have this option). It's generally advisable to correct for population structure in some way (more on that later), however there is the possibility of overcorrecting and removing an adaptive signal as this might be correlated with the underlying population structure. Also, for the sake of adaptive units, the approach is basically garunteed to produce structure that differs from the overall (or ESU) structure, which may be misleading. Addition level of complexity comes from the method for correcting for pop structure. The most straight forward would be to use the main PC axis from the overall structure analysis. Another option is to use MEMs, which capture geographical structuring, that are corrected with population structure. In this was you control for geography and population structure somewhat simultaneously, but this can also prove to be an overly strong correction.
+
+For this reason I will be exploring the results from multiple different approaches:
+a. a full RDA with no corrections
+b. a partial RDA with weak population correction (one PC or one MEM)
+c. a partial RDA with strong population correction (all of the best MEMs at one)
+
+I will evaluate all of these models and decide which is the most appropriate, then compare that to the LFMM results and identify the strongest candidate loci.
+
+# POPULATION STRUCTURE CORRECTIONS
+## Load in the PCA information from the overall analysis
+```{r}
+plink_pca <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = F) %>% dplyr::select(-V1)
+eigenval <- scan("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenval")
+
+# set names
+names(plink_pca)[1] <- "ind"
+colnames(plink_pca)[-1] <- paste0("PC", 1:(ncol(plink_pca) - 1))
+nrow(plink_pca)
+#correct number of samples
+
+pve05 <- data.frame(PC = 1:199, pve = eigenval/sum(eigenval)*100)
+pve05
+
+a05 <- ggplot(pve05, aes(PC, pve)) + geom_bar(stat = "identity")+
+  ylab("Percentage variance explained") + theme_light()
+a05
+```
+So PC1 and 2 are certainly doing the most to explain the population structure.
+
+# Getting moran's eigenvector maps (MEMs)
+```{r}
+## mems
+# read in coordinates from metadata file and filter for individuals in indorder
+coords <- read_csv("../../../raw_data/BANS_all_sample_data_shifted.csv") %>%
+  filter(BGP_ID %in% plink_pca$ind) %>% 
+  dplyr::select(BGP_ID, Long, Lat)
+
+# reorder coordinates to match PCA data
+coords <- coords[(match(plink_pca$ind, coords$BGP_ID)),]
+
+coords_sf <- st_as_sf(coords, coords = c("Long", "Lat"), crs = 4326)
+
+gd <- geosphere::distm(as(coords_sf, "Spatial"), fun = geosphere::distHaversine)
+dist <- as.dist(gd)
+
+# generate MEMs based on coordinates
+mem <- adespatial::dbmem(dist, MEM.autocor = "all")
+
+# rda to assess how much MEMs explain genetic variation (PC1–PC2)
+mem_rda <- vegan::rda(plink_pca[,c("PC1", "PC2")] ~ ., as.data.frame(mem[,1:10]))
+summary(mem_rda)
+```
+meaning the first 10 MEMs explain about 55% of the variation in genetic PCA space.
+
+```{r}
+# create a null (intercept-only) rda model as a baseline
+mem_rda_full <- vegan::rda(plink_pca[,c("PC1", "PC2")] ~ 1, as.data.frame(mem[,1:10]))
+summary(mem_rda_full)
+
+# stepwise forward selection of mem variables based on adjusted R-square and significance
+selmem <- vegan::ordiR2step(mem_rda_full, mem_rda, Pin = .01)
+summary(selmem)
+```
+MEM1 alone explains about 36% of the genetic PCA variation. This is going to be capturing broader geographic structuring, which makes sense given the PCA. This is probably equivalent to E-W variation.
+
+So the selected MEMs capture: 
+52.4% of total variation in PC1 and PC2
+97% of what the full 10-MEM model explained
+
+```{r}
+# extract the names of the selected mem variables
+selmem.vars <- names(selmem$terminfo$ordered)
+print(selmem.vars)
+# subset the mem matrix to include only the mems that explain population structure
+mem_popstr <- mem[,selmem.vars]
+mem_popstr
+
+saveRDS(mem_popstr, file = "../scratch/BANS.mems.popstr.rds")
+```
+
+```{r}
+coords_mems_pc <- cbind(coords, mem, plink_pca[, c("PC1", "PC2")])
+
+map <- rnaturalearth::ne_states(
+  country = c("United States of America", "Canada", "Mexico"),
+  returnclass = "sf"
+)
+
+# selmem.vars should be something like:
+# selmem.vars <- c("MEM1", "MEM4", "MEM5", "MEM10", "MEM2")
+
+mem_plots <- lapply(selmem.vars, function(mem_var) {
+  ggplot(map) +
+    geom_sf(fill = "gray90", color = "gray70", linewidth = 0.2) +
+    geom_point(
+      data = coords_mems_pc,
+      aes(
+        x = Long,
+        y = Lat,
+        color = .data[[mem_var]]
+      ),
+      size = 2
+    ) +
+    coord_sf(xlim = c(-165, -50), ylim = c(23, 70)) +
+    scale_color_viridis_c(name = mem_var) +
+    labs(title = mem_var, x = NULL, y = NULL) +
+    theme_bw() +
+    theme(
+      panel.grid = element_blank(),
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "right"
+    )
+})
+
+mem_grid <- wrap_plots(mem_plots, ncol = 2)
+
+plot(mem_grid)
+
+pdf("../figures/MEM_plots.pdf")
+print(mem_grid)
+dev.off()
+```
+One thing I saw is a paper recommending was selecting MEMs from the final set (selmem) which are uncorrelated with your selected environmental variables as well. You can do that like:
+```{r}
+env <- fread("../../05.genomic_offset/output/Bans_envonly_pop.txt")
+pred.vars <- c("bio05", "bio15", "bio18")
+pred <- env %>% dplyr::select(all_of(pred.vars))
+
+corselmem <- cor(mem_popstr, pred) # remove any correlated
+# identify variables with correlation >= 0.7 with *any other variable*
+highcor <- rownames(corselmem)[apply(abs(corselmem) >= 0.7, 1, any)]
+
+# remove those
+uncorselmem <- mem[, selmem.vars]
+uncorselmem <- uncorselmem[, !(colnames(uncorselmem) %in% highcor), drop = FALSE]
+uncorselmem_ids <- as.data.frame(cbind(env, uncorselmem))
+
+saveRDS(uncorselmem, file = "../outputs/bans.mems.popstr.uncor.rds")
+saveRDS(uncorselmem_ids, file = "../outputs/bans.mems.env.uncor_ids.rds")
+```
+
+```{bash}
+rsync -avzP /Users/ericarobertson/Desktop/BANS_Pub/analysis/07.adaptive_analysis/outputs/bans.mems.env.uncor_ids.rds ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/data/
+```
+
+# PREP FOR RDA RUNS
+```{bash}
+vcf="/scratch/alpine/ericacnr@colostate.edu/BANS/02.5.neutral_pop_struc/BANS.filtered.unrel.vcf.gz"
+
+conda activate GWAS2
+plink --vcf $vcf --aec --recode --out BANS.unrel_ind.imputed4.1
+
+cat BANS.unrel_ind.imputed4.1.map | awk -F"\t" '{split($1, a, "__"); print $1"\t"a[1]"."$4"\t"$3"\t"$4}' > BANS.unrel_ind.imputed4.1_loc.map
+
+plink --ped BANS.unrel_ind.imputed4.1.ped \
+  --map BANS.unrel_ind.imputed4.1_loc.map \
+  --make-bed --aec \
+  --out BANS.unrel_ind.imputed4.1
+
+plink --bfile BANS.unrel_ind.imputed4.1 -aec --recode A --out BANS.unrel_ind.imputed4.1
+
+tail -n +2 BANS.unrel_ind.imputed4.1.raw > BANS.unrel_ind.imputed4.1_noheader.raw
+```
+
+# RDA MODEL BUILDING
+```{r}
+### 1. Fit RDAs ----
+# Baseline (env only)
+bans.rda.vars <- rda(geno_df ~ bio05 + bio15 + bio18, data = pred_pc_mems_env, scale = TRUE)
+saveRDS(bans.rda.vars, file = "results/RDA_output/BANS.RDAresults.envonly_bio5.15.18.RDS")
+
+# Control for MEMs (full, uncorrelated)"MEM1"  "MEM4"  "MEM5"  "MEM10" "MEM2"
+rda_env_mems_uncor <- rda(geno_df ~ bio05 + bio15 + bio18 +
+                      Condition(MEM4 + MEM5 + MEM10 + MEM2),
+                    data = pred_pc_mems_env, scale = TRUE)
+saveRDS(rda_env_mems_uncor, file = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mems_4.5.10.2.RDS")
+
+rda_env_mem1 <- rda(geno_df ~ bio05 + bio15 + bio18 +
+                      Condition(MEM4),
+                    data = pred_pc_mems_env, scale = TRUE)
+saveRDS(rda_env_mems_uncor, file = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mems_4.RDS")
+
+
+# Control for PCs
+rda_env_pc1 <- rda(geno_df ~ bio05 + bio15 + bio18 +
+                       Condition(PC1),
+                     data = pred_pc_mems_env, scale = TRUE)
+saveRDS(rda_env_mems_uncor, file = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.RDS")
+
+rda_env_pc12 <- rda(geno_df ~ bio05 + bio15 + bio18 +
+                       Condition(PC1),
+                     data = pred_pc_mems_env, scale = TRUE)
+saveRDS(rda_env_mems_uncor, file = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.2.RDS")
+```
+
+# FULL RDA SCRIPT
+## sbatch
+```{bash, label="run_adaptive_RDA.R"}
+#!/bin/bash
+#SBATCH --job-name=adaptiveRDA
+#SBATCH --output=adaptiveRDA%j.out
+#SBATCH --error=adaptiveRDA%j.err
+#SBATCH -t 11:00:00
+#SBATCH -p amilan
+#SBATCH --qos=normal
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node 24
+#SBATCH --mem=90G
+#SBATCH --mail-type=ALL
+#SBATCH  --mail-user=ericacnr@colostate.edu
+
+source ~/.bashrc
+
+############ Load and Run RDA.R script ############
+conda activate R
+Run your R script
+Rscript adaptive_RDA_models.R
+```
+## generating RDAs
+Set up as an array
+rda_model_names.txt:
+env_only
+env_mems
+env_mem4
+env_pc1
+env_pc12
+
+```{bash, label="run_RDA_models_array.sbatch"}
+#!/bin/bash
+#SBATCH --job-name=RDA_models
+#SBATCH --partition=amilan
+#SBATCH --qos=normal
+#SBATCH --array=1-5
+#SBATCH --time=02:00:00
+#SBATCH --mem=60G
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --output=logs/RDA_model_%A_%a.out
+#SBATCH --error=logs/RDA_model_%A_%a.err
+
+set -x
+
+source ~/.bashrc
+conda activate R
+
+mkdir -p logs
+mkdir -p results/RDA_output
+
+MODEL=$(sed -n "${SLURM_ARRAY_TASK_ID}p" rda_model_names.txt)
+
+echo "Running model: ${MODEL}"
+
+Rscript run_RDA_model.R "${MODEL}"
+```
+
+```{r, label="run_RDA_model.R"}
+library(dplyr)
+library(data.table)
+library(vegan)
+
+args <- commandArgs(trailingOnly = TRUE)
+model_name <- args[1]
+
+if (is.na(model_name)) {
+  stop("No model name supplied. Example: Rscript run_RDA_model.R env_pc12")
+}
+
+print(paste("Running RDA model:", model_name))
+
+############ PCA for population structure variables ############ 
+
+plink_pca <- read.table(
+  "../02.5.neutral_pop_struc/BANS.filtered.unrel.ld25-10-0.2.eigenvec",
+  header = FALSE
+)
+
+colnames(plink_pca) <- c(
+  "FID",
+  "IID",
+  paste0("PC", 1:(ncol(plink_pca) - 2))
+)
+
+plink_pca <- plink_pca %>%
+  dplyr::select(-FID) %>%
+  dplyr::rename(BGP_ID = IID)
+
+############ MEMs and environmental data ############ 
+
+uncorselmem_ids <- readRDS("data/bans.mems.env.uncor_ids.rds")
+
+############ Genotype data ############ 
+
+genotypes <- fread("BANS.unrel_ind.imputed4.1.raw", header = TRUE)
+
+stopifnot(
+  nrow(genotypes) == nrow(plink_pca),
+  nrow(genotypes) == nrow(uncorselmem_ids)
+)
+
+stopifnot(all(genotypes$IID == plink_pca$BGP_ID))
+stopifnot(all(genotypes$IID == uncorselmem_ids$BGP_ID))
+
+geno_df <- genotypes[, -(1:6), with = FALSE]
+
+print("First genotype column names:")
+print(head(colnames(geno_df)))
+
+stopifnot(!any(grepl("^V[0-9]+$", colnames(geno_df))))
+
+############ Predictor data ############ 
+
+env.vars <- c("bio05", "bio15", "bio18")
+mem.vars <- c("MEM4", "MEM5", "MEM10", "MEM2")
+PC.vars <- c("PC1", "PC2")
+
+pred.vars <- c(env.vars, mem.vars, PC.vars)
+
+pred_pc_mems_env <- uncorselmem_ids %>%
+  left_join(plink_pca, by = "BGP_ID") %>%
+  dplyr::select(all_of(pred.vars))
+
+stopifnot(!anyNA(pred_pc_mems_env))
+
+############ Fit selected RDA model ############ 
+
+dir.create("results/RDA_output", recursive = TRUE, showWarnings = FALSE)
+
+if (model_name == "env_only") {
+  
+  rda_model <- vegan::rda(
+    geno_df ~ bio05 + bio15 + bio18,
+    data = pred_pc_mems_env,
+    scale = TRUE
+  )
+  
+  outfile <- "results/RDA_output/BANS.RDAresults.envonly_bio5.15.18.RDS"
+  
+} else if (model_name == "env_mems") {
+  
+  rda_model <- vegan::rda(
+    geno_df ~ bio05 + bio15 + bio18 +
+      Condition(MEM4 + MEM5 + MEM10 + MEM2),
+    data = pred_pc_mems_env,
+    scale = TRUE
+  )
+  
+  outfile <- "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mems_4.5.10.2.RDS"
+  
+} else if (model_name == "env_mem4") {
+  
+  rda_model <- vegan::rda(
+    geno_df ~ bio05 + bio15 + bio18 +
+      Condition(MEM4),
+    data = pred_pc_mems_env,
+    scale = TRUE
+  )
+  
+  outfile <- "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mem_4.RDS"
+  
+} else if (model_name == "env_pc1") {
+  
+  rda_model <- vegan::rda(
+    geno_df ~ bio05 + bio15 + bio18 +
+      Condition(PC1),
+    data = pred_pc_mems_env,
+    scale = TRUE
+  )
+  
+  outfile <- "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.RDS"
+  
+} else if (model_name == "env_pc12") {
+  
+  rda_model <- vegan::rda(
+    geno_df ~ bio05 + bio15 + bio18 +
+      Condition(PC1 + PC2),
+    data = pred_pc_mems_env,
+    scale = TRUE
+  )
+  
+  outfile <- "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.2.RDS"
+  
+} else {
+  stop("Unrecognized model name: ", model_name)
+}
+
+saveRDS(rda_model, outfile)
+
+print(paste("Saved model to:", outfile))
+print("Model summary:")
+print(summary(rda_model))
+
+scores_check <- vegan::scores(rda_model, choices = 1, display = "species")
+print("First RDA species score names:")
+print(head(rownames(scores_check)))
+```
+
+```{r, label="model_eval.R"}
+library(dplyr)
+library(data.table)
+library(vegan)
+
+############ Helper print functions ############
+
+print_header <- function(title) {
+  cat("\n")
+  cat("============================================================\n")
+  cat(title, "\n")
+  cat("============================================================\n")
+}
+
+print_subheader <- function(title) {
+  cat("\n")
+  cat("------------------------------------------------------------\n")
+  cat(title, "\n")
+  cat("------------------------------------------------------------\n")
+}
+
+
+print_header("BANS RDA MODEL EVALUATION")
+
+
+# 1. ENVIRONMENT ONLY
+
+print_header("MODEL: env_only")
+
+env_only <- readRDS("results/RDA_output/BANS.RDAresults.envonly_bio5.15.18.RDS")
+
+print_subheader("Adjusted R2")
+print(vegan::RsquareAdj(env_only))
+
+print_subheader("Overall permutation test")
+print(anova(env_only))
+
+print_subheader("Axis-by-axis permutation test")
+print(anova(env_only, by = "axis"))
+
+print_subheader("Model summary")
+print(summary(env_only))
+
+rm(env_only)
+gc()
+
+
+
+# 2. ENVIRONMENT + MEMS
+
+print_header("MODEL: env_mems")
+
+env_mems <- readRDS("results/RDA_output/BANS.RDAresults.env_bio5.15.18.mems_4.5.10.2.RDS")
+
+print_subheader("Adjusted R2")
+print(vegan::RsquareAdj(env_mems))
+
+print_subheader("Overall permutation test")
+print(anova(env_mems))
+
+print_subheader("Axis-by-axis permutation test")
+print(anova(env_mems, by = "axis"))
+
+print_subheader("Model summary")
+print(summary(env_mems))
+
+rm(env_mems)
+gc()
+
+
+
+# 3. ENVIRONMENT + MEM4
+
+
+print_header("MODEL: env_mem4")
+
+env_mem4 <- readRDS("results/RDA_output/BANS.RDAresults.env_bio5.15.18.mem_4.RDS")
+
+print_subheader("Adjusted R2")
+print(vegan::RsquareAdj(env_mem4))
+
+print_subheader("Overall permutation test")
+print(anova(env_mem4))
+
+print_subheader("Axis-by-axis permutation test")
+print(anova(env_mem4, by = "axis"))
+
+print_subheader("Model summary")
+print(summary(env_mem4))
+
+rm(env_mem4)
+gc()
+
+
+
+# 4. ENVIRONMENT + PC1
+
+
+print_header("MODEL: env_pc1")
+
+env_pc1 <- readRDS("results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.RDS")
+
+print_subheader("Adjusted R2")
+print(vegan::RsquareAdj(env_pc1))
+
+print_subheader("Overall permutation test")
+print(anova(env_pc1))
+
+print_subheader("Axis-by-axis permutation test")
+print(anova(env_pc1, by = "axis"))
+
+print_subheader("Model summary")
+print(summary(env_pc1))
+
+rm(env_pc1)
+gc()
+
+# 5. ENVIRONMENT + PC1 + PC2
+
+print_header("MODEL: env_pc12")
+
+env_pc12 <- readRDS("results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.2.RDS")
+
+print_subheader("Adjusted R2")
+print(vegan::RsquareAdj(env_pc12))
+
+print_subheader("Overall permutation test")
+print(anova(env_pc12))
+
+print_subheader("Axis-by-axis permutation test")
+print(anova(env_pc12, by = "axis"))
+
+print_subheader("Model summary")
+print(summary(env_pc12))
+
+rm(env_pc12)
+gc()
+
+print_header("DONE")
+```
+
+# MODEL OUTPUTS
+BANS.RDAresults.envonly_bio5.15.18.RDS
+BANS.RDAresults.env_bio5.15.18.mems_4.5.10.2.RDS
+BANS.RDAresults.env_bio5.15.18.mem_4.RDS
+BANS.RDAresults.env_bio5.15.18.PC_1.RDS
+BANS.RDAresults.env_bio5.15.18.PC_1.2.RDS
+
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/results/RDA_output/BANS.RDAresults.envonly_bio5.15.18.RDS  /Users/ericarobertson/Desktop/BANS_Pub/analysis/07.adaptive_analysis/scratch/RDA_models/
+```
+
+BANS RDA MODEL EVALUATION
+Models evaluated:
+  - env_only
+  - env_mems
+  - env_mem4
+  - env_pc1
+  - env_pc12
+
+ADJUSTED R2 VALUES
+    model         r2       adj_r2
+ env_only 0.01799565 0.0029649754
+ env_mems 0.01750873 0.0025524024
+ env_mem4 0.01759406 0.0025862013
+  env_pc1 0.01732410 0.0023667672
+ env_pc12 0.01586373 0.0009113542
+
+# GETTING OUTLIER LOCI
+
+```{bash, label="run_RDA_outliers_array.sbatch"}
+#!/bin/bash
+#SBATCH --job-name=RDA_outliers
+#SBATCH --partition=amilan
+#SBATCH --array=1-5
+#SBATCH --time=12:00:00
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=1
+#SBATCH --output=logs/RDA_outliers_%A_%a.out
+#SBATCH --error=logs/RDA_outliers_%A_%a.err
+
+set -euo pipefail
+
+source ~/.bashrc
+conda activate R
+
+mkdir -p logs
+mkdir -p results/RDA_output
+
+MODEL=$(sed -n "${SLURM_ARRAY_TASK_ID}p" model_names.txt)
+
+echo "Running model: ${MODEL}"
+
+Rscript get_RDA_outliers.R "${MODEL}"
+```
+
+```{r, label="get_RDA_outliers.R"}
+library(dplyr)
+library(data.table)
+library(vegan)
+
+args <- commandArgs(trailingOnly = TRUE)
+model_name <- args[1]
+
+if (is.na(model_name)) {
+  stop("No model_name supplied")
+}
+
+model_files <- list(
+  env_only = "results/RDA_output/BANS.RDAresults.envonly_bio5.15.18.RDS",
+  env_mems = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mems_1.4.5.10.2.RDS",
+  env_mem4 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mem_4.RDS",
+  env_pc1  = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.RDS",
+  env_pc12 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.2.RDS"
+)
+
+if (!model_name %in% names(model_files)) {
+  stop("Model name not recognized: ", model_name)
+}
+
+rda_model <- readRDS(model_files[[model_name]])
+
+best.model.output <- paste0(
+  "results/RDA_output/outliers/BANS.RDAresults.",
+  model_name,
+  ".outliers_z3.txt"
+)
+
+print(paste("Running candidate loci extraction for:", model_name))
+
+############ Reload genotype and predictor data ############
+
+genotypes <- fread("BANS.unrel_ind.imputed4.1.raw", header=TRUE)
+geno_df <- genotypes[, -(1:6), with = FALSE]
+
+env.vars <- c(
+  "bio05", "bio15", "bio18"
+)
+
+uncorselmem_ids <- readRDS("data/bans.mems.env.uncor_ids.rds")
+
+pred <- uncorselmem_ids %>%
+  dplyr::select(all_of(env.vars))
+
+############ Get RDA SNP loadings ############
+
+n_axes <- min(3, length(vegan::eigenvals(rda_model, model = "constrained")))
+
+RDA.scores <- vegan::scores(
+  rda_model,
+  choices = 1:n_axes,
+  display = "species"
+)
+
+outliers <- function(x, z = 3) {
+  lims <- mean(x, na.rm = TRUE) + c(-1, 1) * z * sd(x, na.rm = TRUE)
+  x[x < lims[1] | x > lims[2]]
+}
+
+cand_list <- lapply(1:n_axes, function(ax) {
+  cand <- outliers(RDA.scores[, ax], z = 3)
+  
+  data.frame(
+    axis = ax,
+    snp = names(cand),
+    loading = unname(cand),
+    stringsAsFactors = FALSE
+  )
+})
+
+df.cand <- bind_rows(cand_list)
+
+print("Number of candidate SNP-axis hits:")
+print(nrow(df.cand))
+
+print("Number of unique candidate SNPs:")
+print(length(unique(df.cand$snp)))
+
+############ Add environmental correlations ############
+
+# Only do this if genotype column names need the same formatting as RDA species names
+df.cand$snp <- gsub("-", ".", df.cand$snp)
+
+missing_snps <- setdiff(df.cand$snp, colnames(geno_df))
+
+if (length(missing_snps) > 0) {
+  stop(
+    "Some candidate SNPs are not present in geno_df column names. Example: ",
+    paste(head(missing_snps), collapse = ", ")
+  )
+}
+
+cor_mat <- matrix(
+  NA_real_,
+  nrow = nrow(df.cand),
+  ncol = ncol(pred)
+)
+
+colnames(cor_mat) <- colnames(pred)
+
+for (i in seq_len(nrow(df.cand))) {
+  snp_name <- df.cand$snp[i]
+  snp_gen <- geno_df[[snp_name]]
+  
+  cor_mat[i, ] <- apply(
+    pred,
+    2,
+    function(x) cor(x, snp_gen, use = "complete.obs")
+  )
+}
+
+cand <- cbind.data.frame(df.cand, cor_mat)
+
+
+############ Handle duplicate SNPs across axes ############
+
+dup_summary <- cand %>%
+  count(snp, name = "n_axes_detected") %>%
+  filter(n_axes_detected > 1)
+
+print("Number of SNPs detected on multiple axes:")
+print(nrow(dup_summary))
+
+# Keep the axis where each SNP has the largest absolute loading
+cand <- cand %>%
+  group_by(snp) %>%
+  slice_max(order_by = abs(loading), n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+
+############ Assign strongest environmental predictor ############
+
+env_start <- 4
+env_end <- ncol(cand)
+
+cand$predictor <- apply(
+  cand[, env_start:env_end],
+  1,
+  function(x) names(which.max(abs(x)))
+)
+
+cand$correlation <- apply(
+  cand[, env_start:env_end],
+  1,
+  function(x) max(abs(x), na.rm = TRUE)
+)
+
+print("Candidate SNPs by strongest environmental predictor:")
+print(table(cand$predictor))
+
+
+############ Save output ############
+
+write.table(
+  cand,
+  best.model.output,
+  row.names = FALSE,
+  sep = "\t",
+  quote = FALSE
+)
+
+print(paste("Wrote outliers to:", best.model.output))
+```
+
+Outliers:
+BANS.RDAresults.env_mem4.outliers_z3.txt
+BANS.RDAresults.env_only.outliers_z3.txt
+BANS.RDAresults.env_pc1.outliers_z3.txt
+BANS.RDAresults.env_mems.outliers_z3.txt
+BANS.RDAresults.env_pc12.outliers_z3.txt
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/results/RDA_output/outliers/* /Users/ericarobertson/Desktop/BANS_Pub/analysis/07.adaptive_analysis/scratch/outliers/
+```
+
+```{r, label="get_RDA_outliers_pval.R"}
+library(dplyr)
+library(data.table)
+library(vegan)
+library(robustbase)
+library(qvalue)
+
+args <- commandArgs(trailingOnly = TRUE)
+model_name <- args[1]
+
+if (is.na(model_name)) {
+  stop("No model_name supplied")
+}
+
+model_files <- list(
+  env_only = "results/RDA_output/BANS.RDAresults.envonly_bio5.15.18.RDS",
+  env_mems = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mems_1.4.5.10.2.RDS",
+  env_mem4 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mem_4.RDS",
+  env_pc1  = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.RDS",
+  env_pc12 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.2.RDS"
+)
+
+if (!model_name %in% names(model_files)) {
+  stop("Model name not recognized: ", model_name)
+}
+
+
+print(paste("Running p-value candidate loci extraction for:", model_name))
+
+############ Load RDA model ############
+
+rda_model <- readRDS(model_files[[model_name]])
+
+############ Reload genotype and predictor data ############
+
+genotypes <- fread("BANS.unrel_ind.imputed4.1.raw", header = TRUE)
+geno_df <- genotypes[, -(1:6), with = FALSE]
+
+env.vars <- c("bio05", "bio15", "bio18")
+
+uncorselmem_ids <- readRDS("data/bans.mems.env.uncor_ids.rds")
+
+pred <- uncorselmem_ids %>%
+  dplyr::select(all_of(env.vars))
+
+############ RDA p-value outlier function ############
+
+rdadapt <- function(rda, K = NULL) {
+  zscores <- vegan::scores(
+    rda,
+    display = "species",
+    choices = 1:K,
+    scaling = 0
+  )
+  
+  resscale <- scale(zscores)
+  
+  center <- colMeans(resscale)
+  
+  covmat <- cov(resscale)
+ 
+ resmaha <- mahalanobis(
+    resscale,
+    center = center,
+    cov = covmat
+  )
+  
+  lambda <- median(resmaha, na.rm = TRUE) / qchisq(0.5, df = K)
+  
+  pvals <- pchisq(
+    resmaha / lambda,
+    df = K,
+    lower.tail = FALSE
+  )
+  qvals <- qvalue::qvalue(pvals)$qvalues
+  
+  data.frame(
+    Loci = rownames(zscores),
+    p.value = pvals,
+    q.value = qvals,
+    row.names = NULL
+  )
+}
+
+############ Get RDA SNP p-values ############
+out_file_p <- paste0(
+  "results/RDA_output/outliers/BANS.RDAresults.",
+  model_name,
+  ".outliers_pvalue.txt"
+)
+
+K <- 3
+
+radapt.res <- rdadapt(rda_model, K = K)
+
+thres_env <- 0.05 / nrow(radapt.res)
+
+outliers.pval <- radapt.res %>%
+  dplyr::filter(p.value < thres_env) %>%
+  dplyr::mutate(
+    contig = sapply(strsplit(Loci, "_"), `[`, 1)
+  ) %>%
+  dplyr::arrange(contig, p.value)
+
+print("Bonferroni p-value threshold:")
+print(thres_env)
+
+print("Top outliers:")
+print(head(outliers.pval))
+
+print("Number of candidate SNP hits:")
+print(nrow(outliers.pval))
+
+print("Number of unique candidate SNPs:")
+print(length(unique(outliers.pval$Loci)))
+
+############ Add environmental correlations ############
+
+cor_mat <- matrix(
+  NA_real_,
+  nrow = nrow(outliers.pval),
+  ncol = ncol(pred)
+)
+
+colnames(cor_mat) <- colnames(pred)
+
+for (i in seq_len(nrow(outliers.pval))) {
+  
+  snp_name <- outliers.pval$Loci[i]
+  snp_gen <- geno_df[[snp_name]]
+  
+  cor_mat[i, ] <- apply(
+    pred,
+    2,
+    function(x) cor(x, snp_gen, use = "complete.obs")
+  )
+}
+
+cand.pval <- cbind.data.frame(outliers.pval, cor_mat)
+
+############ Assign strongest environmental predictor ############
+
+env_cols <- colnames(pred)
+
+cand.pval$predictor <- apply(
+  cand.pval[, env_cols, drop = FALSE],
+  1,
+  function(x) names(which.max(abs(x)))
+)
+
+cand.pval$correlation <- apply(
+  cand.pval[, env_cols, drop = FALSE],
+  1,
+  function(x) max(abs(x), na.rm = TRUE)
+)
+
+print("Candidate p_value SNPs by strongest environmental predictor:")
+print(table(cand.pval$predictor))
+
+############ Save output ############
+
+write.table(
+  cand.pval,
+  out_file_p,
+  row.names = FALSE,
+  sep = "\t",
+  quote = FALSE
+)
+
+print(paste("Wrote outliers to:", out_file_p))
+
+############ Get RDA SNP q-values ############
+out_file_q <- paste0(
+  "results/RDA_output/outliers/BANS.RDAresults.",
+  model_name,
+  ".outliers_qvalue.txt"
+)
+
+thres_qval <- 0.10
+outliers.qval <- radapt.res %>%
+  dplyr::filter(q.value < thres_qval) %>%
+  dplyr::mutate(
+    contig = sapply(strsplit(Loci, "_"), `[`, 1)
+  ) %>%
+  dplyr::arrange(contig, q.value)
+
+print("Q-value threshold:")
+print(thres_env)
+
+print("Top outliers:")
+print(head(outliers.qval))
+
+print("Number of candidate SNP hits:")
+print(nrow(outliers.qval))
+
+print("Number of unique candidate SNPs:")
+print(length(unique(outliers.qval$Loci)))
+
+############ Add environmental correlations ############
+
+cor_mat <- matrix(
+  NA_real_,
+  nrow = nrow(outliers.qval),
+  ncol = ncol(pred)
+)
+
+colnames(cor_mat) <- colnames(pred)
+
+for (i in seq_len(nrow(outliers.qval))) {
+  
+  snp_name <- outliers.qval$Loci[i]
+  snp_gen <- geno_df[[snp_name]]
+  
+  cor_mat[i, ] <- apply(
+    pred,
+    2,
+    function(x) cor(x, snp_gen, use = "complete.obs")
+  )
+}
+
+cand.qval <- cbind.data.frame(outliers.qval, cor_mat)
+
+############ Assign strongest environmental predictor ############
+
+env_cols <- colnames(pred)
+
+cand.qval$predictor <- apply(
+  cand.qval[, env_cols, drop = FALSE],
+  1,
+  function(x) names(which.max(abs(x)))
+)
+
+cand.qval$correlation <- apply(
+  cand.qval[, env_cols, drop = FALSE],
+  1,
+  function(x) max(abs(x), na.rm = TRUE)
+)
+
+print("Candidate q_value SNPs by strongest environmental predictor:")
+print(table(cand.qval$predictor))
+
+############ Save output ############
+
+write.table(
+  cand.qval,
+  out_file_q,
+  row.names = FALSE,
+  sep = "\t",
+  quote = FALSE
+)
+
+print(paste("Wrote outliers to:", out_file_q))
+```
+
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/results/RDA_output/outliers/*value.txt /Users/ericarobertson/Desktop/BANS_Pub/analysis/07.adaptive_analysis/scratch/outliers/
+```
+## output summary for qvals
+### Running model: env_only
+[1] "Running p-value candidate loci extraction for: env_only"
+[1] "Bonferroni p-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+                  Loci      p.value      q.value             contig
+1 CM026850.1.2962223_A 3.867915e-09 0.0033645333 CM026850.1.2962223
+2 CM026850.1.2962308_A 5.737705e-11 0.0001497295 CM026850.1.2962308
+3 CM026850.1.2983277_T 3.217786e-10 0.0005598027 CM026850.1.2983277
+4 CM026850.1.3001161_A 1.342769e-09 0.0014016209 CM026850.1.3001161
+5 CM026850.1.3002914_A 5.459425e-09 0.0040705019 CM026850.1.3002914
+6 CM026850.1.3006856_C 8.330075e-10 0.0010868961 CM026850.1.3006856
+[1] "Number of candidate SNP hits:"
+[1] 8
+[1] "Number of unique candidate SNPs:"
+[1] 8
+[1] "Candidate p_value SNPs by strongest environmental predictor:"
+
+bio05 bio18
+    5     3
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_only.outliers_pvalue.txt"
+[1] "Bonferroni q-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+                    Loci      p.value      q.value               contig
+1 CM026847.1.138751055_T 4.959090e-07 0.0719133701 CM026847.1.138751055
+2  CM026848.1.22314890_A 2.685088e-07 0.0609298013  CM026848.1.22314890
+3   CM026850.1.2962223_A 3.867915e-09 0.0033645333   CM026850.1.2962223
+4   CM026850.1.2962244_T 4.011751e-08 0.0139585997   CM026850.1.2962244
+5   CM026850.1.2962308_A 5.737705e-11 0.0001497295   CM026850.1.2962308
+6   CM026850.1.2969480_T 2.516735e-08 0.0101039973   CM026850.1.2969480
+[1] "Number of candidate SNP hits:"
+[1] 45
+[1] "Number of unique candidate SNPs:"
+[1] 45
+[1] "Candidate q_value SNPs by strongest environmental predictor:"
+
+bio05 bio15 bio18
+   24     4    17
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_only.outliers_qvalue.txt"
+
+###Running model: env_mems
+[1] "Running p-value candidate loci extraction for: env_mems"
+[1] "Bonferroni p-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+                   Loci      p.value     q.value              contig
+1 CM026849.1.18661616_T 4.352724e-09 0.011358741 CM026849.1.18661616
+2 CM026859.1.18284751_C 1.823568e-09 0.009517458 CM026859.1.18284751
+[1] "Number of candidate SNP hits:"
+[1] 2
+[1] "Number of unique candidate SNPs:"
+[1] 2
+[1] "Candidate p_value SNPs by strongest environmental predictor:"
+
+bio05
+    2
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_mems.outliers_pvalue.txt"
+[1] "Bonferroni q-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+                   Loci      p.value    q.value              contig
+1 CM026849.1.18661616_T 4.352724e-09 0.01135874 CM026849.1.18661616
+2 CM026849.1.54571302_T 3.396825e-08 0.03545703 CM026849.1.54571302
+3  CM026850.1.3001161_A 9.715698e-08 0.06427729  CM026850.1.3001161
+4  CM026850.1.3006856_C 1.569810e-07 0.06570558  CM026850.1.3006856
+5  CM026850.1.3112617_C 1.164531e-08 0.01717192  CM026850.1.3112617
+6 CM026850.1.36816698_C 9.852545e-08 0.06427729 CM026850.1.36816698
+[1] "Number of candidate SNP hits:"
+[1] 14
+[1] "Number of unique candidate SNPs:"
+[1] 14
+[1] "Candidate q_value SNPs by strongest environmental predictor:"
+
+bio05 bio18
+    9     5
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_mems.outliers_qvalue.txt"
+###Running model: env_mem4
+[1] "Running p-value candidate loci extraction for: env_mem4"
+[1] "Bonferroni p-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+[1] Loci    p.value q.value contig
+<0 rows> (or 0-length row.names)
+[1] "Number of candidate SNP hits:"
+[1] 0
+[1] "Number of unique candidate SNPs:"
+[1] 0
+[1] "Candidate p_value SNPs by strongest environmental predictor:"
+< table of extent 0 >
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_mem4.outliers_pvalue.txt"
+[1] "Bonferroni q-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+[1] Loci    p.value q.value contig
+<0 rows> (or 0-length row.names)
+[1] "Number of candidate SNP hits:"
+[1] 0
+[1] "Number of unique candidate SNPs:"
+[1] 0
+[1] "Candidate q_value SNPs by strongest environmental predictor:"
+< table of extent 0 >
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_mem4.outliers_qvalue.txt"
+###Running model: env_pc1
+[1] "Running p-value candidate loci extraction for: env_pc1"
+[1] "Bonferroni p-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+                  Loci      p.value      q.value             contig
+1 CM026850.1.2983277_T 6.078916e-09 0.0158633625 CM026850.1.2983277
+2 CM026850.1.3112617_C 5.515286e-11 0.0002878506 CM026850.1.3112617
+[1] "Number of candidate SNP hits:"
+[1] 2
+[1] "Number of unique candidate SNPs:"
+[1] 2
+[1] "Candidate p_value SNPs by strongest environmental predictor:"
+
+bio05 bio18
+    1     1
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_pc1.outliers_pvalue.txt"
+[1] "Bonferroni q-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+                   Loci      p.value    q.value              contig
+1 CM026847.1.25465583_A 1.168621e-07 0.08713139 CM026847.1.25465583
+2  CM026850.1.2962223_A 1.046307e-07 0.08713139  CM026850.1.2962223
+3  CM026850.1.2962308_A 1.219225e-08 0.02121103  CM026850.1.2962308
+4  CM026850.1.2969480_T 1.902674e-07 0.09930326  CM026850.1.2969480
+5  CM026850.1.2983277_T 6.078916e-09 0.01586336  CM026850.1.2983277
+6  CM026850.1.3001161_A 4.207102e-08 0.04391493  CM026850.1.3001161
+[1] "Number of candidate SNP hits:"
+[1] 10
+[1] "Number of unique candidate SNPs:"
+[1] 10
+[1] "Candidate q_value SNPs by strongest environmental predictor:"
+
+bio05 bio15 bio18
+    6     1     3
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_pc1.outliers_qvalue.txt"
+###Running model: env_pc12
+[1] "Running p-value candidate loci extraction for: env_pc12"
+[1] "Bonferroni p-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+                  Loci      p.value    q.value             contig
+1 CM026850.1.3112617_C 5.113472e-09 0.02668794 CM026850.1.3112617
+[1] "Number of candidate SNP hits:"
+[1] 1
+[1] "Number of unique candidate SNPs:"
+[1] 1
+[1] "Candidate p_value SNPs by strongest environmental predictor:"
+
+bio18
+    1
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_pc12.outliers_pvalue.txt"
+[1] "Bonferroni q-value threshold:"
+[1] 9.580119e-09
+[1] "Top outliers:"
+                  Loci      p.value    q.value             contig
+1 CM026850.1.3112617_C 5.113472e-09 0.02668794 CM026850.1.3112617
+[1] "Number of candidate SNP hits:"
+[1] 1
+[1] "Number of unique candidate SNPs:"
+[1] 1
+[1] "Candidate q_value SNPs by strongest environmental predictor:"
+
+bio18
+    1
+[1] "Wrote outliers to: results/RDA_output/outliers/BANS.RDAresults.env_pc12.outliers_qvalue.txt"
+### summary
+| Model    | p-value SNPs | q-value SNPs |
+| -------- | -----------: | -----------: |
+| env_only |            8 |           45 |
+| env_mems |            2 |           14 |
+| env_mem4 |            0 |            0 |
+| env_pc1  |            2 |           10 |
+| env_pc12 |            1 |            1 |
+
+| Model    | bio05 | bio15 | bio18 | Total q-value SNPs |
+| -------- | ----: | ----: | ----: | -----------------: |
+| env_only |    24 |     4 |    17 |                 45 |
+| env_mems |     9 |     0 |     5 |                 14 |
+| env_mem4 |     0 |     0 |     0 |                  0 |
+| env_pc1  |     6 |     1 |     3 |                 10 |
+| env_pc12 |     0 |     0 |     1 |                  1 |
+
+Notes: The SNP CM026850.1.3112617_C appears repeatedly (env_mems, env_pc1, env_pc12), suggesting it may be one of the more robust candidates.
+Several SNPs around CM026850.1:2.96–3.11 Mb recur across models (2962223, 2962308, 2969480, 2983277, 3001161, 3006856, 3112617), which looks like a potential candidate region rather than isolated SNPs.
+Worth Manhattan plotting...
+
+# PLOTTING
+model_names.txt:
+env_only
+env_mems
+env_mem4
+env_pc1
+env_pc12
+
+```{bash}
+rsync -avzP /Users/ericarobertson/Desktop/BANS_Pub/analysis/03.delineate_ESUs/scratch/geo_informative_labels.RDS ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/data/
+
+rsync -avzP /Users/ericarobertson/Desktop/BANS_Pub/analysis/03.delineate_ESUs/figures/colors/bg_colors_new.rds ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/data/
+```
+
+```{r, label="plot_RDA_model.R, sd"}
+library(dplyr)
+library(ggplot2)
+library(vegan)
+library(tibble)
+library(ggrastr)
+library(readr)
+
+args <- commandArgs(trailingOnly = TRUE)
+model_name <- args[1]
+
+dir.create("plots/RDA", recursive = TRUE, showWarnings = FALSE)
+
+model_files <- c(
+  env_mem4 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mem_4.RDS",
+  env_only = "results/RDA_output/BANS.RDAresults.envonly_bio5.15.18.RDS",
+  env_pc1  = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.RDS",
+  env_mems = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mems_4.5.10.2.RDS",
+  env_pc12 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.2.RDS"
+)
+
+outlier_files <- c(
+  env_mem4 = "results/RDA_output/outliers/BANS.RDAresults.env_mem4.outliers_z3.txt",
+  env_only = "results/RDA_output/outliers/BANS.RDAresults.env_only.outliers_z3.txt",
+  env_pc1  = "results/RDA_output/outliers/BANS.RDAresults.env_pc1.outliers_z3.txt",
+  env_mems = "results/RDA_output/outliers/BANS.RDAresults.env_mems.outliers_z3.txt",
+  env_pc12 = "results/RDA_output/outliers/BANS.RDAresults.env_pc12.outliers_z3.txt"
+)
+
+rda_obj <- readRDS(model_files[model_name])
+cand <- read.table(outlier_files[model_name], header = TRUE)
+
+uncorselmem_ids <- readRDS("data/bans.mems.env.uncor_ids.rds")
+pops <- read.csv("data/pops.csv")
+geo_key <- readRDS("data/geo_informative_labels.RDS")
+bg <- readRDS("data/bg_colors_new.rds")
+
+eig <- summary(rda_obj)$cont$importance
+prop <- eig["Proportion Explained", grep("^RDA", colnames(eig))]
+
+site_scores <- as.data.frame(scores(rda_obj, choices = c(1, 2), display = "sites", scaling = 3)) %>%
+  rownames_to_column("row") %>%
+  rename(RDA1 = 2, RDA2 = 3) %>%
+  mutate(BGP_ID = uncorselmem_ids$BGP_ID) %>%
+  left_join(pops, by = "BGP_ID")
+
+region_order <- c(
+  "Cluster_1", "Cluster_5", "Cluster_17", "Cluster_4", "Cluster_8", "Cluster_13", "Cluster_2", "Cluster_21",
+  "Cluster_3", "Cluster_7", "Cluster_18", "Cluster_19", "Cluster_22", "Cluster_20",
+  "Cluster_12", "Cluster_15", "Cluster_14", "Cluster_10", "Cluster_9", "Cluster_11", "Cluster_6", "Cluster_16"
+)
+
+site_scores <- site_scores %>%
+  left_join(geo_key, by = "Group") %>%
+  mutate(
+    Group = factor(Group, levels = region_order)
+  )
+
+group_labels <- site_scores %>%
+  distinct(Group, Group_label) %>%
+  arrange(Group)
+
+label_vec <- setNames(group_labels$Group_label, group_labels$Group)
+
+var_scores <- as.data.frame(scores(rda_obj, choices = c(1, 2), display = "bp", scaling = 3)) %>%
+  rownames_to_column("variable") %>%
+  rename(RDA1 = 2, RDA2 = 3)
+
+rda_eigs <- vegan::eigenvals(rda_obj, model = "constrained")
+rda_pct <- round(100 * rda_eigs / sum(rda_eigs), 1) 
+
+locus_scores <- scores(rda_obj, choices=c(1:2), display="species", scaling="none") # vegan references "species", here these are the loci
+TAB_loci <- data.frame(
+  names = rownames(locus_scores),
+  RDA1 = locus_scores[, 1],
+  RDA2 = locus_scores[, 2]
+)
+
+TAB_loci$type <- "Neutral"
+TAB_loci$type[TAB_loci$names%in%cand$Loci] <- "Outlier"
+TAB_loci$type <- factor(TAB_loci$type, levels = c("Neutral", "Outlier"))
+TAB_loci <- TAB_loci[order(TAB_loci$type),]
+TAB_loci_pred <- TAB_loci %>%
+  left_join(cand %>% dplyr::select(Loci, predictor),
+            by = c("names" = "Loci"))
+pred_cols <- c(
+  bio05 = "#66C2A5",
+  bio15 = "#FC8D62",
+  bio18 = "#8DA0CB"
+)
+
+############ locus-loading biplot ############
+
+p_loci <- ggplot() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  rasterise(
+    geom_point(
+      data = TAB_loci_pred %>% filter(type == "Neutral"),
+      aes(x = RDA1, y = RDA2),
+      color = "grey75",
+      size = 1.2,
+      alpha = 0.35
+    ),
+    dpi = 400
+  ) +
+  geom_point(
+    data = TAB_loci_pred %>% filter(type == "Outlier"),
+    aes(x = RDA1, y = RDA2, fill = predictor),
+    shape = 21,
+    color = "black",
+    size = 1.2,
+    alpha = 0.9,
+    stroke = 0.15
+  ) +
+  scale_fill_manual(values = pred_cols, name = "Predictor") +
+  geom_segment(
+    data = var_scores,
+    aes(x = 0, y = 0, xend = 3 * RDA1, yend = 3 * RDA2),
+    arrow = arrow(length = unit(0.02, "npc")),
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = var_scores,
+    aes(x = 3.25 * RDA1, y = 3.25 * RDA2, label = variable),
+    fontface = "bold",
+    size = 3
+  ) +
+  labs(
+    title = paste("RDA locus-loading biplot:", model_name),
+    x = paste0("RDA1 (", rda_pct[1], "%)"),
+    y = paste0("RDA2 (", rda_pct[2], "%)")
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+ggsave(
+  paste0("plots/RDA/BANS.", model_name, ".locus_loading_biplot_z3.pdf"),
+  p_loci,
+  width = 10,
+  height = 6,
+  useDingbats = FALSE
+)
+
+############ sample/site biplot ############
+
+p_sites <- ggplot() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  geom_point(
+    data = site_scores,
+    aes(x = RDA1, y = RDA2, color = Group),
+    size = 3,
+    alpha = 0.9
+  ) +
+  scale_color_manual(
+    values = bg_use,
+    breaks = region_order,
+    labels = label_vec[region_order],
+    name = "Location"
+  ) +
+  geom_segment(
+    data = var_scores,
+    aes(x = 0, y = 0, xend = 6 * RDA1, yend = 6 * RDA2),
+    arrow = arrow(length = unit(0.02, "npc")),
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = var_scores,
+    aes(x = 3.25 * RDA1, y = 3.25 * RDA2, label = variable),
+    fontface = "bold",
+    size = 3
+  ) +
+  labs(
+    title = paste("RDA sample/site biplot:", model_name),
+    x = paste0("RDA1 (", rda_pct[1], "%)"),
+    y = paste0("RDA2 (", rda_pct[2], "%)")
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+ggsave(
+  paste0("plots/RDA/BANS.", model_name, ".sample_site_biplot_z3.pdf"),
+  p_sites,
+  width = 8,
+  height = 6,
+  useDingbats = FALSE
+)
+```
+
+```{r, label="plot_RDA_sites.R"}
+library(dplyr)
+library(ggplot2)
+library(vegan)
+library(tibble)
+library(ggrastr)
+library(readr)
+
+args <- commandArgs(trailingOnly = TRUE)
+model_name <- args[1]
+
+dir.create("plots/RDA", recursive = TRUE, showWarnings = FALSE)
+
+model_files <- c(
+  env_mem4 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mem_4.RDS",
+  env_only = "results/RDA_output/BANS.RDAresults.envonly_bio5.15.18.RDS",
+  env_pc1  = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.RDS",
+  env_mems = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mems_4.5.10.2.RDS",
+  env_pc12 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.2.RDS"
+)
+
+outlier_files <- c(
+  env_mem4 = "results/RDA_output/outliers/BANS.RDAresults.env_mem4.outliers_z3.txt",
+  env_only = "results/RDA_output/outliers/BANS.RDAresults.env_only.outliers_z3.txt",
+  env_pc1  = "results/RDA_output/outliers/BANS.RDAresults.env_pc1.outliers_z3.txt",
+  env_mems = "results/RDA_output/outliers/BANS.RDAresults.env_mems.outliers_z3.txt",
+  env_pc12 = "results/RDA_output/outliers/BANS.RDAresults.env_pc12.outliers_z3.txt"
+)
+
+rda_obj <- readRDS(model_files[model_name])
+cand <- read.table(outlier_files[model_name], header = TRUE)
+
+uncorselmem_ids <- readRDS("data/bans.mems.env.uncor_ids.rds")
+pops <- read.csv("data/pops.csv")
+geo_key <- readRDS("data/geo_informative_labels.RDS")
+bg <- readRDS("data/bg_colors_new.rds")
+
+eig <- summary(rda_obj)$cont$importance
+prop <- eig["Proportion Explained", grep("^RDA", colnames(eig))]
+
+site_scores <- as.data.frame(scores(rda_obj, choices = c(1, 2), display = "sites", scaling = 3)) %>%
+  rownames_to_column("row") %>%
+  rename(RDA1 = 2, RDA2 = 3) %>%
+  mutate(BGP_ID = uncorselmem_ids$BGP_ID) %>%
+  left_join(pops, by = "BGP_ID")
+
+region_order <- c(
+  "Cluster_1", "Cluster_5", "Cluster_17", "Cluster_4", "Cluster_8", "Cluster_13", "Cluster_2", "Cluster_21",
+  "Cluster_3", "Cluster_7", "Cluster_18", "Cluster_19", "Cluster_22", "Cluster_20",
+  "Cluster_12", "Cluster_15", "Cluster_14", "Cluster_10", "Cluster_9", "Cluster_11", "Cluster_6", "Cluster_16"
+)
+
+site_scores <- site_scores %>%
+  left_join(geo_key, by = "Group") %>%
+  mutate(
+    Group = factor(Group, levels = region_order)
+  )
+
+group_labels <- site_scores %>%
+  distinct(Group, Group_label) %>%
+  arrange(Group)
+
+label_vec <- setNames(group_labels$Group_label, group_labels$Group)
+
+var_scores <- as.data.frame(scores(rda_obj, choices = c(1, 2), display = "bp", scaling = 3)) %>%
+  rownames_to_column("variable") %>%
+  rename(RDA1 = 2, RDA2 = 3)
+
+rda_eigs <- vegan::eigenvals(rda_obj, model = "constrained")
+rda_pct <- round(100 * rda_eigs / sum(rda_eigs), 1) 
+
+############ sample/site biplot ############
+
+p_sites <- ggplot() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  geom_point(
+    data = site_scores,
+    aes(x = RDA1, y = RDA2, color = Group),
+    size = 3,
+    alpha = 0.9
+  ) +
+  scale_color_manual(
+    values = bg,
+    breaks = region_order,
+    labels = label_vec[region_order],
+    name = "Location"
+  ) +
+  geom_segment(
+    data = var_scores,
+    aes(x = 0, y = 0, xend = 10 * RDA1, yend = 10 * RDA2),
+    arrow = arrow(length = unit(0.02, "npc")),
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = var_scores,
+    aes(x = 3.25 * RDA1, y = 3.25 * RDA2, label = variable),
+    fontface = "bold",
+    size = 3
+  ) +
+  labs(
+    title = paste("RDA sample/site biplot:", model_name),
+    x = paste0("RDA1 (", rda_pct[1], "%)"),
+    y = paste0("RDA2 (", rda_pct[2], "%)")
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+ggsave(
+  paste0("plots/RDA/BANS.", model_name, ".sample_site_biplot_2.pdf"),
+  p_sites,
+  width = 8,
+  height = 6,
+  useDingbats = FALSE
+)
+```
+
+```{r, label="plot_RDA_model_qval.R"}
+library(dplyr)
+library(ggplot2)
+library(vegan)
+library(tibble)
+library(ggrastr)
+library(readr)
+
+args <- commandArgs(trailingOnly = TRUE)
+model_name <- args[1]
+
+dir.create("plots/RDA", recursive = TRUE, showWarnings = FALSE)
+
+model_files <- c(
+  env_mem4 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mem_4.RDS",
+  env_only = "results/RDA_output/BANS.RDAresults.envonly_bio5.15.18.RDS",
+  env_pc1  = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.RDS",
+  env_mems = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.mems_4.5.10.2.RDS",
+  env_pc12 = "results/RDA_output/BANS.RDAresults.env_bio5.15.18.PC_1.2.RDS"
+)
+
+outlier_files <- c(
+  env_mem4 = "results/RDA_output/outliers/BANS.RDAresults.env_mem4.outliers_qvalue.txt",
+  env_only = "results/RDA_output/outliers/BANS.RDAresults.env_only.outliers_qvalue.txt",
+  env_pc1  = "results/RDA_output/outliers/BANS.RDAresults.env_pc1.outliers_qvalue.txt",
+  env_mems = "results/RDA_output/outliers/BANS.RDAresults.env_mems.outliers_qvalue.txt",
+  env_pc12 = "results/RDA_output/outliers/BANS.RDAresults.env_pc12.outliers_qvalue.txt"
+)
+
+rda_obj <- readRDS(model_files[model_name])
+cand <- read.table(outlier_files[model_name], header = TRUE)
+
+eig <- summary(rda_obj)$cont$importance
+prop <- eig["Proportion Explained", grep("^RDA", colnames(eig))]
+
+var_scores <- as.data.frame(scores(rda_obj, choices = c(1, 2), display = "bp", scaling = 3)) %>%
+  rownames_to_column("variable") %>%
+  rename(RDA1 = 2, RDA2 = 3)
+
+rda_eigs <- vegan::eigenvals(rda_obj, model = "constrained")
+rda_pct <- round(100 * rda_eigs / sum(rda_eigs), 1) 
+
+locus_scores <- scores(rda_obj, choices=c(1:2), display="species", scaling="none") # vegan references "species", here these are the loci
+TAB_loci <- data.frame(
+  names = rownames(locus_scores),
+  RDA1 = locus_scores[, 1],
+  RDA2 = locus_scores[, 2]
+)
+
+TAB_loci$type <- "Neutral"
+TAB_loci$type[TAB_loci$names%in%cand$Loci] <- "Outlier"
+TAB_loci$type <- factor(TAB_loci$type, levels = c("Neutral", "Outlier"))
+TAB_loci <- TAB_loci[order(TAB_loci$type),]
+TAB_loci_pred <- TAB_loci %>%
+  left_join(cand %>% dplyr::select(Loci, predictor),
+            by = c("names" = "Loci"))
+pred_cols <- c(
+  bio05 = "#66C2A5",
+  bio15 = "#FC8D62",
+  bio18 = "#8DA0CB"
+)
+
+############ locus-loading biplot ############
+
+p_loci <- ggplot() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  rasterise(
+    geom_point(
+      data = TAB_loci_pred %>% filter(type == "Neutral"),
+      aes(x = RDA1, y = RDA2),
+      color = "grey75",
+      size = 1.2,
+      alpha = 0.35
+    ),
+    dpi = 400
+  ) +
+  geom_point(
+    data = TAB_loci_pred %>% filter(type == "Outlier"),
+    aes(x = RDA1, y = RDA2, fill = predictor),
+    shape = 21,
+    color = "black",
+    size = 1.2,
+    alpha = 0.9,
+    stroke = 0.15
+  ) +
+  scale_fill_manual(values = pred_cols, name = "Predictor") +
+  geom_segment(
+    data = var_scores,
+    aes(x = 0, y = 0, xend = 3 * RDA1, yend = 3 * RDA2),
+    arrow = arrow(length = unit(0.02, "npc")),
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = var_scores,
+    aes(x = 3.25 * RDA1, y = 3.25 * RDA2, label = variable),
+    fontface = "bold",
+    size = 3
+  ) +
+  labs(
+    title = paste("RDA locus-loading biplot:", model_name),
+    x = paste0("RDA1 (", rda_pct[1], "%)"),
+    y = paste0("RDA2 (", rda_pct[2], "%)")
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+ggsave(
+  paste0("plots/RDA/BANS.", model_name, ".locus_loading_biplot_qval.pdf"),
+  p_loci,
+  width = 10,
+  height = 6,
+  useDingbats = FALSE
+)
+```
+
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/03.GEA/plots/RDA/BANS.*sample_site_biplot_AU_colors.pdf /Users/ericarobertson/Desktop/BANS_Pub/analysis/07.adaptive_analysis/figures/RDA/
+```
+
+

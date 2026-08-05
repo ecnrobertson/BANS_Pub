@@ -1,0 +1,939 @@
+---
+title: "07.2.adaptive_structure"
+output: html_document
+---
+
+# Libraries
+```{r}
+library(tidyverse)
+library(ggthemes)
+library(patchwork)
+library(cowplot)
+library(ggpubr)
+library(sf)
+library(raster)
+library(terra)
+library(rnaturalearth)
+library(tess3r)
+library(genoscapeRtools)
+library(mignette)
+library(ggplot2)
+library(ggrepel)
+library(pophelper)
+library(data.table)
+library(stringr)
+library(gridExtra)
+library(grid)
+```
+
+# RDA BIPLOTS
+So, we've run an RDA and identified candidate SNPs. 
+```{r}
+cand <- read.table("../scratch/outliers/BANS.RDAresults.env_only.outliers_z3.txt", header=T)
+nrow(cand)
+head(cand)
+```
+
+# PULLING CANDIDATE SNPS
+```{r}
+infile <- "../scratch/outliers/BANS.RDAresults.env_only.outliers_z3.txt"
+
+outfile <- "../scratch/outliers/BANS.RDAresults.env_only.outliers_z3_list.txt"
+
+cand <- read.table(infile, header = TRUE)
+head(cand)
+
+cand_snps <- cand$snp
+
+snp_list <- gsub("_[ACGT]$", "", cand_snps)
+
+snp_list <- unique(snp_list)
+head(snp_list)
+
+writeLines(snp_list, outfile)
+```
+
+```{r}
+library(readr)
+
+models <- c(
+  "env_mem4",
+  "env_only",
+  "env_pc1",
+  "env_mems",
+  "env_pc12"
+)
+
+for (model in models) {
+
+  infile <- paste0(
+    "../03.GEA/results/RDA_output/outliers/BANS.RDAresults.",
+    model,
+    ".outliers_qvalue.txt"
+  )
+
+  outfile <- paste0(
+    "../scratch/outliers/BANS.",
+    model,
+    ".outliers_list_qvalue.txt"
+  )
+
+  cand <- read.table(infile, header = TRUE)
+
+  # Extract SNP names
+  cand_snps <- cand$Loci
+
+  # Remove allele suffix
+  snp_list <- gsub("_[ACGT]$", "", cand_snps)
+
+  # Keep unique loci
+  snp_list <- unique(snp_list)
+  head(snp_list)
+
+  writeLines(snp_list, outfile)
+
+  cat("Wrote:", outfile, "\n")
+}
+```
+
+[1] "BANS.env_mem4.outliers_list_qvalue
+[2] "BANS.env_mems.outliers_list_qvalue
+[3] "BANS.env_only.outliers_list_qvalue
+[4] "BANS.env_pc1.outliers_list_qvalue
+[5] "BANS.env_pc12.outliers_list_qvalue
+
+# PCA PLOTS
+```{bash}
+conda activate GWAS2
+vcf="/scratch/alpine/ericacnr@colostate.edu/BANS/02.5.neutral_pop_struc/BANS.filtered.unrel.vcf.gz"
+
+plink --vcf $vcf --aec --recode --out BANS.filtered.unrel
+#5219142 variants and 200 people pass filters and QC.
+
+cat BANS.filtered.unrel.map | awk -F"\t" '{split($1, a, "__"); print $1"\t"a[1]"."$4"\t"$3"\t"$4}' > BANS.filtered.unrel_loc.map
+
+plink --ped BANS.filtered.unrel.ped \
+--map BANS.filtered.unrel_loc.map \
+--make-bed --aec \
+--out BANS.filtered.unrel
+
+bfile="BANS.filtered.unrel"
+
+plink --bfile $bfile --extract BANS.env_mems.outliers_list_qvalue.txt --make-bed --aec --out BANS.env_mems.outliers_list_qvalue
+plink --bfile $bfile --extract BANS.env_only.outliers_list_qvalue.txt --make-bed --aec --out BANS.env_only.outliers_list_qvalue
+plink --bfile $bfile --extract BANS.RDAresults.env_only.outliers_z3_list.txt --make-bed --aec --out BANS.env_only.outliers_z3_list
+
+plink --bfile BANS.env_mems.outliers_list_qvalue \
+--make-bed --aec \
+--out BANS.env_mems.outliers_list_qvalue
+plink --bfile BANS.env_only.outliers_list_qvalue \
+--make-bed --aec \
+--out BANS.env_only.outliers_list_qvalue
+plink --bfile BANS.env_only.outliers_z3_list \
+--make-bed --aec \
+--out BANS.env_only.outliers_z3_list
+```
+
+```{bash}
+plink --bfile BANS.env_mems.outliers_list_qvalue --aec --pca 199 --out BANS.env_mems.outliers_list_qvalue
+plink --bfile BANS.env_only.outliers_list_qvalue --aec --pca 199 --out BANS.env_only.outliers_list_qvalue
+plink --bfile BANS.env_only.outliers_z3_list --aec --pca 199 --out BANS.env_only.outliers_z3_list
+```
+
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/04.delineate_AUs/BANS.env*.eigen* /Users/ericarobertson/Desktop/BANS_Pub/analysis/07.adaptive_analysis/scratch/PCA_eigen/
+```
+
+## Plotting env_only
+```{r}
+library(readr)
+plink_pca <- read.table("../scratch/PCA_eigen/BANS.env_only.outliers_list_qvalue.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+eigenval <- scan("../scratch/PCA_eigen/BANS.env_only.outliers_list_qvalue.eigenval")
+
+pve05 <- data.frame(PC = 1:45, pve = eigenval/sum(eigenval)*100)
+ggplot(pve05[1:20, ], aes(x = PC, y = pve)) +
+  geom_col(width = 0.9) +
+  labs(x = "PC", y = "PVE (%)") +
+  theme_bw()
+
+# set names
+pca05 <- plink_pca
+colnames(pca05)[-1] <- paste0("PC", 1:(ncol(pca05) - 1))
+names(pca05)[1] <- "ind"
+nrow(pca05)
+#correct number of samples
+
+bg <- readRDS("../../03.delineate_ESUs/figures/colors/bg_colors_new.rds")
+
+pops <- read.csv("../../03.delineate_ESUs/scratch/pops.csv") %>% filter(BGP_ID %in% pca05$ind)
+
+# Join PCA data
+pca.cluster <- left_join(pca05, pops %>% rename(ind=BGP_ID), by="ind")  # left_join PCA first to preserve PC columns
+
+samp_unrel  <-  read.table("../../03.delineate_ESUs/scratch/BANS_unrel_sample_list_short_2.txt", header = F)
+pca.cluster.norel <- pca.cluster %>% filter(ind %in% samp_unrel$V1)
+nrow(pca.cluster.norel)
+
+geo_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels.RDS")
+region_order <- c(
+  "Cluster_1", "Cluster_5", "Cluster_17", "Cluster_4", "Cluster_8", "Cluster_13", "Cluster_2", "Cluster_21",
+  "Cluster_3", "Cluster_7", "Cluster_18", "Cluster_19", "Cluster_22", "Cluster_20",
+  "Cluster_12", "Cluster_15", "Cluster_14", "Cluster_10", "Cluster_9", "Cluster_11", "Cluster_6", "Cluster_16"
+)
+
+pca.cluster.norel <- pca.cluster.norel %>%
+  left_join(geo_key, by = "Group") %>%
+  mutate(
+    Group = factor(Group, levels = region_order)
+  )
+
+# make one label per Group, in the same order
+group_labels <- pca.cluster.norel %>%
+  distinct(Group, Group_label) %>%
+  arrange(Group)
+
+label_vec <- setNames(group_labels$Group_label, group_labels$Group)
+
+# make sure colors are in the same order
+bg_use <- bg[region_order]
+
+adaptive.pca <- ggplot(
+  pca.cluster.norel,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Group,
+    text = paste0(
+      "ID: ", ind, "<br>",
+      "Location: ", Group_label, "<br>",
+      "PC1: ", round(PC1, 4), "<br>",
+      "PC2: ", round(PC2, 4)
+    )
+  )
+) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = bg_use,
+    breaks = region_order,
+    labels = label_vec[region_order],
+    name = "Location"
+  ) +
+  theme_light() +
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+adaptive.pca
+
+ggsave("../figures/PCA/BANS_AU_env_only_PCA.png", plot=adaptive.pca, width = 8.5, height = 7)
+```
+
+## Plotting env_mems
+```{r}
+library(readr)
+plink_pca <- read.table("../scratch/PCA_eigen/BANS.env_mems.outliers_list_qvalue.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+eigenval <- scan("../scratch/PCA_eigen/BANS.env_mems.outliers_list_qvalue.eigenval")
+
+pve05 <- data.frame(PC = 1:14, pve = eigenval/sum(eigenval)*100)
+ggplot(pve05[1:20, ], aes(x = PC, y = pve)) +
+  geom_col(width = 0.9) +
+  labs(x = "PC", y = "PVE (%)") +
+  theme_bw()
+
+# set names
+pca05 <- plink_pca
+colnames(pca05)[-1] <- paste0("PC", 1:(ncol(pca05) - 1))
+names(pca05)[1] <- "ind"
+nrow(pca05)
+#correct number of samples
+
+bg <- readRDS("../../03.delineate_ESUs/figures/colors/bg_colors_new.rds")
+
+pops <- read.csv("../../03.delineate_ESUs/scratch/pops.csv") %>% filter(BGP_ID %in% pca05$ind)
+
+# Join PCA data
+pca.cluster <- left_join(pca05, pops %>% rename(ind=BGP_ID), by="ind")  # left_join PCA first to preserve PC columns
+
+samp_unrel  <-  read.table("../../03.delineate_ESUs/scratch/BANS_unrel_sample_list_short_2.txt", header = F)
+pca.cluster.norel <- pca.cluster %>% filter(ind %in% samp_unrel$V1)
+nrow(pca.cluster.norel)
+
+geo_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels.RDS")
+region_order <- c(
+  "Cluster_1", "Cluster_5", "Cluster_17", "Cluster_4", "Cluster_8", "Cluster_13", "Cluster_2", "Cluster_21",
+  "Cluster_3", "Cluster_7", "Cluster_18", "Cluster_19", "Cluster_22", "Cluster_20",
+  "Cluster_12", "Cluster_15", "Cluster_14", "Cluster_10", "Cluster_9", "Cluster_11", "Cluster_6", "Cluster_16"
+)
+
+pca.cluster.norel <- pca.cluster.norel %>%
+  left_join(geo_key, by = "Group") %>%
+  mutate(
+    Group = factor(Group, levels = region_order)
+  )
+
+# make one label per Group, in the same order
+group_labels <- pca.cluster.norel %>%
+  distinct(Group, Group_label) %>%
+  arrange(Group)
+
+label_vec <- setNames(group_labels$Group_label, group_labels$Group)
+
+# make sure colors are in the same order
+bg_use <- bg[region_order]
+
+adaptive.pca <- ggplot(
+  pca.cluster.norel,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Group,
+    text = paste0(
+      "ID: ", ind, "<br>",
+      "Location: ", Group_label, "<br>",
+      "PC1: ", round(PC1, 4), "<br>",
+      "PC2: ", round(PC2, 4)
+    )
+  )
+) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = bg_use,
+    breaks = region_order,
+    labels = label_vec[region_order],
+    name = "Location"
+  ) +
+  theme_light() +
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+adaptive.pca
+
+ggsave("../figures/PCA/BANS_AU_env_mems_PCA.png", plot=adaptive.pca, width = 8.5, height = 7)
+```
+## Plotting env_only
+```{r}
+library(readr)
+plink_pca <- read.table("../scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+eigenval <- scan("../scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenval")
+
+pve05 <- data.frame(PC = 1:199, pve = eigenval/sum(eigenval)*100)
+ggplot(pve05[1:20, ], aes(x = PC, y = pve)) +
+  geom_col(width = 0.9) +
+  labs(x = "PC", y = "PVE (%)") +
+  theme_bw()
+
+# set names
+pca05 <- plink_pca
+colnames(pca05)[-1] <- paste0("PC", 1:(ncol(pca05) - 1))
+names(pca05)[1] <- "ind"
+nrow(pca05)
+#correct number of samples
+
+bg <- readRDS("../../03.delineate_ESUs/figures/colors/bg_colors_new.rds")
+
+pops <- read.csv("../../03.delineate_ESUs/scratch/pops.csv") %>% filter(BGP_ID %in% pca05$ind)
+
+# Join PCA data
+pca.cluster <- left_join(pca05, pops %>% rename(ind=BGP_ID), by="ind")  # left_join PCA first to preserve PC columns
+
+samp_unrel  <-  read.table("../../03.delineate_ESUs/scratch/BANS_unrel_sample_list_short_2.txt", header = F)
+pca.cluster.norel <- pca.cluster %>% filter(ind %in% samp_unrel$V1)
+nrow(pca.cluster.norel)
+
+geo_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels.RDS")
+region_order <- c(
+  "Cluster_1", "Cluster_5", "Cluster_17", "Cluster_4", "Cluster_8", "Cluster_13", "Cluster_2", "Cluster_21",
+  "Cluster_3", "Cluster_7", "Cluster_18", "Cluster_19", "Cluster_22", "Cluster_20",
+  "Cluster_12", "Cluster_15", "Cluster_14", "Cluster_10", "Cluster_9", "Cluster_11", "Cluster_6", "Cluster_16"
+)
+
+pca.cluster.norel <- pca.cluster.norel %>%
+  left_join(geo_key, by = "Group") %>%
+  mutate(
+    Group = factor(Group, levels = region_order)
+  )
+
+# make one label per Group, in the same order
+group_labels <- pca.cluster.norel %>%
+  distinct(Group, Group_label) %>%
+  arrange(Group)
+
+label_vec <- setNames(group_labels$Group_label, group_labels$Group)
+
+# make sure colors are in the same order
+bg_use <- bg[region_order]
+
+adaptive.pca <- ggplot(
+  pca.cluster.norel,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Group,
+    text = paste0(
+      "ID: ", ind, "<br>",
+      "Location: ", Group_label, "<br>",
+      "PC1: ", round(PC1, 4), "<br>",
+      "PC2: ", round(PC2, 4)
+    )
+  )
+) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = bg_use,
+    breaks = region_order,
+    labels = label_vec[region_order],
+    name = "Location"
+  ) +
+  theme_light() +
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+adaptive.pca
+
+ggsave("../figures/PCA/BANS.env_only.outliers_z3_list.png", plot=adaptive.pca, width = 8.5, height = 7)
+```
+
+# ADMIXTURE
+```{bash}
+pcangsd_path="/projects/ericacnr@colostate.edu/pcangsd"
+bfile="BANS.env_only.outliers_z3_list"
+export PYTHONPATH="/projects/ericacnr@colostate.edu/pcangsd:$PYTHONPATH"
+
+for eig in {1..5}
+do
+  for r in {1..5}
+         do
+          $CONDA_PREFIX/bin/python $pcangsd_path/pcangsd/main.py -p $bfile -t 4 --admix --admix-seed $RANDOM -e $eig --admix-alpha 0 -o pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e"$eig".run"$r"
+        done
+done
+```
+
+```{bash}
+rsync -avzP ericacnr@colostate.edu@login.rc.colorado.edu:/scratch/alpine/ericacnr@colostate.edu/BANS/04.delineate_AUs/pcadmix_output/BANS.*z3*.Q /Users/ericarobertson/Desktop/BANS_Pub/analysis/07.adaptive_analysis/scratch/pcadmix_output/
+```
+
+# FUNCTIONS FOR PLOTTING
+(Note, the following functions were generated using ChatGPT based on the above written out code that I produced, interpretation of results is my own)
+## Color Pallets
+The trick here is to get the color right for the spatial ESU rather than having the numbers be the same, cause the numbers aren't consistent across space with different K values.
+```{r}
+# G3
+cols_G3 <-  c(
+  "AU1" = "#B8E152",
+  "AU2" = "#EF7A58",
+  "AU3" = "#44649F")
+barplot(
+  rep(1, length(cols_G3)),
+  col = cols_G3,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G3),
+  las = 2
+)
+saveRDS(cols_G3, "../figures/AU_grouping_colors_3_G3.rds")
+
+# G4
+cols_G4 <-  c(
+  "AU1" = "#FF5A5F",
+  "AU2" = "#187795",
+  "AU3" = "#FFBF46",
+  "AU4" = "#C1839F")
+barplot(
+  rep(1, length(cols_G4)),
+  col = cols_G4,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G4),
+  las = 2
+)
+saveRDS(cols_G4, "../figures/AU_grouping_colors_3_G4.rds")
+
+#G5
+cols_G5 <-  c(
+  "AU1" = "#187795",
+  "AU2" = "#FF5A5F",
+  "AU3" = "#FFBF46",
+  "AU4" = "#C1839F",
+  "AU5" = "#8ACB88")
+barplot(
+  rep(1, length(cols_G5)),
+  col = cols_G5,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G5),
+  las = 2
+)
+saveRDS(cols_G5, "../figures/AU_grouping_colors_3_G5.rds")
+
+# G6
+cols_G6 <-  c(
+  "AU1" = "#187795",
+  "AU2" = "#FF5A5F",
+  "AU3" = "#FFBF46",
+  "AU4" = "#C1839F",
+  "AU5" = "#8ACB88",
+  "AU6" = "#2589BD")
+barplot(
+  rep(1, length(cols_G6)),
+  col = cols_G6,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G6),
+  las = 2
+)
+saveRDS(cols_G6, "../figures/AU_grouping_colors_3_G6.rds")
+```
+
+## Genoscapes
+```{r}
+source("../../03.delineate_ESUs/code/prep_genoscape_inputs.R")
+source("../../03.delineate_ESUs/code/build_genoscape_surfaces.R")
+
+############# PICK A K VALUE #############
+scheme <- "G4"
+K <- 4
+# read in data, either raw or forced
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e3.run1.admix.4.Q") %>%
+setNames(paste0("AU", 1:K))
+
+scheme <- "G5"
+K <- 5
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e4.run1.admix.5.Q") %>%
+setNames(paste0("AU", 1:K))
+
+scheme <- "G3"
+K <- 3
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e2.run1.admix.3.Q") %>%
+setNames(paste0("AU", 1:K))
+
+out_plot_genoscape_png <- paste0("BANS_genoscape_",scheme,"_adaptive_final.png")
+out_plot_genoscape_pdf <- paste0("BANS_genoscape_",scheme,"_adaptive_final.pdf")
+genoscape_path <- "../figures/genoscape/"
+cols <- readRDS(paste0("../figures/AU_grouping_colors_3_G4.rds"))
+cols <- cols[1:3]
+barplot(rep(1, length(cols)), col = cols, border = NA, axes = FALSE, space = 0, names.arg = names(cols), las = 2)
+
+############# OTHER INPUT FILES #############
+pca_df <- read.table("../scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenvec", header = FALSE)
+
+all <- read_csv("../../../raw_data/BANS_all_sample_data_shifted.csv")
+############# MAKE Q_TIBBLE #############
+prep_out <- prep_genoscape_inputs(
+  Q_tibble = Q_tibble,
+  pca_df = pca_df,
+  all = all
+)
+
+Q_tibble <- prep_out$Q_tibble
+Q_matrix <- prep_out$Q_matrix
+long_lat_matrix <- prep_out$long_lat_matrix
+LatLong_tibble <- prep_out$LatLong_tibble
+K <- ncol(Q_matrix)
+q_cols <- colnames(Q_matrix)
+
+############# GET BASE MAP AND RANGE #############
+map <- ne_states(
+  country = c("United States of America", "Canada"),
+  returnclass = "sf"
+)
+
+na_union <- st_union(map)
+
+breeding.sf <- st_read("../../../raw_data/spatial_files/banswa_range_2023.gpkg") %>%
+  filter(season == "breeding") %>%
+  st_transform(crs(map))
+
+breeding_na <- st_intersection(breeding.sf, na_union)
+
+############# BUILD THE GENOSCAPE #############
+surf_out <- build_genoscape_surfaces(
+  Q_matrix = Q_matrix,
+  long_lat_matrix = long_lat_matrix,
+  breeding_na = breeding_na,
+  cols = cols,
+  K = K,
+  brick_names = q_cols,
+  out_tif = NULL,
+  alpha_threshold = 0,
+  krig_val = 15
+)
+
+genoscape_brick <- surf_out$genoscape_brick
+genoscape_projected <- surf_out$genoscape_projected
+
+coords_sf <- st_as_sf(
+  LatLong_tibble,
+  coords = c("Long", "Lat"),
+  crs = 4326   # WGS84 (lon/lat)
+)
+
+# then we want to get the sample points as coded by letter, which I established previously
+cluster_geo <- readRDS("../scratch/geo_informative_labels_centroids.RDS")
+
+## make sf points from lon/lat
+cluster_geo_sf <- st_as_sf(
+  cluster_geo,
+  coords = c("Y", "X"),
+  crs = 4326,      # lon/lat
+  remove = FALSE
+)
+
+## transform to your map CRS (lamproj must be a valid CRS/proj string)
+cluster_geo_sf <- st_transform(cluster_geo_sf, st_crs(lamproj))
+
+genoscape <- ggplot() +
+  ggspatial::layer_spatial(genoscape_projected) +
+  geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = ocean, fill = "#bddbe6") +
+  geom_sf(data = lakes, fill = "#bddbe6") + #bddbe6
+  #geom_spatial_point(data = long_lat_tibble, mapping = aes(x = Long, y = Lat), size=1, alpha = 0.7) + 
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1)) +
+  geom_sf(data=cluster_geo_sf,
+          size = 0.5)+
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)+
+  geom_label_repel(
+    data = cluster_geo_sf,
+    aes(label = Group_label, geometry = geometry),
+    stat = "sf_coordinates",
+    size = 1.5,            # increase text size (try 2.2–3.0
+    fontface = "bold",
+    label.size = .1,
+    label.padding = unit(0.1, "lines"),
+    label.r=0,
+    fill = "white",
+    alpha = 1,
+    point.padding = 0.1,
+    segment.color = "black",
+    segment.size = 0.25,
+    min.segment.length = 0
+)
+
+############# SAVE THE GENOSCAPE #############
+ggsave(plot=genoscape, path=genoscape_path, filename=out_plot_genoscape_png, width = 7, height = 4.5)
+
+pdf(paste0(genoscape_path,out_plot_genoscape_pdf))
+print(genoscape)
+dev.off()
+```
+
+## Admixture plots
+```{r}
+source("make_admix_barplot_and_assignments_adaptive.R")
+
+######## INPUT #########
+K <-  5
+out_plot_admix <- "BANS_admix_overall_alpha0_adaptive_G5_letters_2.png"
+admix_plot_path <- "../figures/admix_plots/"
+
+out_group_admix <- "BANS_admix_grouping_adaptive_G5_2.tsv"
+admix_group_path <- "../scratch/admix_output/"
+
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e4.run1.admix.5.Q") %>%
+  setNames(paste0("AU", 1:K))
+cols <- readRDS("../figures/AU_grouping_colors_3_G5.rds")
+
+K <-  4
+out_plot_admix <- "BANS_admix_overall_alpha0_adaptiveG4_letters_2.png"
+admix_plot_path <- "../figures/admix_plots/"
+
+out_group_admix <- "BANS_admix_grouping_adaptive_G4_2.tsv"
+admix_group_path <- "../scratch/admix_output/"
+
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e3.run1.admix.4.Q") %>%
+  setNames(paste0("AU", 1:K))
+cols <- readRDS("../figures/AU_grouping_colors_3_G4.rds")
+
+K <-  3
+out_plot_admix <- "BANS_admix_overall_alpha0_adaptive_G3_letters_2.png"
+admix_plot_path <- "../figures/admix_plots/"
+
+out_group_admix <- "BANS_admix_grouping_adaptive_G3_2.tsv"
+admix_group_path <- "../scratch/admix_output/"
+
+Q_tibble <- read.table("../scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e2.run1.admix.3.Q") %>%
+  setNames(paste0("AU", 1:K))
+cols <- readRDS("../figures/AU_grouping_colors_3_G6.rds")
+cols <- cols[1:3]
+
+######## RUNNING FUNCTION ########
+pca_df <- read.table("../scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenvec", header = FALSE)
+
+pops <- readr::read_csv("../../03.delineate_ESUs/scratch/pops.csv", show_col_types = FALSE)
+letter_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels_centroids.RDS")
+
+group_label_order <- c("WA", "NT", 
+                       "AK", "YT", "SK", "MB_1", "MB_2", "MT", "ND", "WY_1", "WY_2", "AB", "BC_1", "BC_2",
+                       "ON", "QC_1", "QC_2", "NS_1", "NS_2",
+                       "NB", "PE", "NL")
+
+admix_out <- make_admix_barplot_and_assignments(
+  K_target = K,
+  cols = cols,
+  group_label_order = group_label_order,
+  threshold = 0.45,
+  Q_tibble = Q_tibble,
+  pca_df = pca_df,
+  pops = pops,
+  geo_key = letter_key,
+  out_plot = paste0(admix_plot_path,out_plot_admix),
+  out_assignments = paste0(admix_group_path,out_group_admix)
+)
+
+K_plot <- admix_out$K_plot
+admix_group <- admix_out$admix_group
+q_long <- admix_out$q_long
+
+# This plot is meaningless for the GM ones but easiest to just write it out anyway
+K_plot
+ggsave(path=admix_plot_path, filename=out_plot_admix, plot=K_plot, width = 10, height = 2.2, units = "in", dpi = 300, bg = "white")
+
+write_tsv(admix_group, paste0(admix_group_path,out_group_admix))
+
+############
+pdf("../figures/admix_plots/BANS_admix_overall_alpha0_G4_letters.pdf", width = 10, height = 2.2)
+print(K_plot)
+dev.off()
+```
+
+## PCA plots
+```{r}
+source("../../03.delineate_ESUs/code/plot_pca_admix_solid.R")
+
+out_plot_pca1 <- "../figures/pca_plots/BANS_G4_PCA_AU_coloring.png"
+out_plot_pca2 <- "../figures/pca_plots/BANS_G4_PCA_AU_coloring.png"
+base_cols <- "../../06.final_figures/colors/AU_grouping_colors_K4_2.rds"
+
+admix_groups <- data.table::fread("../scratch/admix_output/BANS_admix_grouping_adaptive_G4_2.tsv")
+cols <- readRDS(base_cols)
+
+plink_pca <- read.table("../scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenvec", header = FALSE)
+pops <- readr::read_csv("../../03.delineate_ESUs/scratch/pops.csv", show_col_types = FALSE)
+eigenval <- scan("../scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenval")
+
+solid_out <- plot_pca_admix_solid(
+  plink_pca = plink_pca,
+  eigenval = eigenval,
+  cols = cols,
+  pops = pops,
+  admix_groups = admix_groups,
+  out_plot = out_plot_pca1,
+)
+
+solid_out$pca_plot
+```
+
+```{r}
+geo_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels.RDS")
+base_cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K4_2.rds")
+base_cols <- base_cols[1:3]
+
+out_group_label_cols_rds <- "../figures/pcadmix_AU_3_group_label_colors.rds"
+out_plot <- "../figures/pca_plots/BANS_K3_PCA_AU_coloring.pdf"
+
+desired_order <- NULL
+
+admix_groups <- data.table::fread("../scratch/admix_output/BANS_admix_grouping_adaptive_G3_2.tsv")
+
+pca_df <- plink_pca %>%
+  select(-V2)
+
+colnames(pca_df)[-1] <- paste0("PC", seq_len(ncol(pca_df) - 1))
+names(pca_df)[1] <- "ind"
+
+pve <- tibble(
+  PC = seq_along(eigenval),
+  pve = eigenval / sum(eigenval) * 100
+)
+
+# -----------------------------
+# Metadata
+# -----------------------------
+pops.groups.labels <- pops %>%
+  transmute(BGP_ID, Group) %>%
+  left_join(geo_key, by = "Group") %>%
+  left_join(admix_groups, by = "BGP_ID") %>%
+  mutate(
+    Group_label = trimws(as.character(Group_label)),
+    admix_group = replace_na(admix_group, "No Assignment")
+  )
+
+
+base_cols["No Assignment"] <- "#BDBDBD"
+
+label_owner <- pops.groups.labels %>%
+  filter(!is.na(Group_label)) %>%
+  count(Group_label, admix_group, name = "n") %>%
+  group_by(Group_label) %>%
+  slice_max(n, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  rename(owner_au = admix_group) %>%
+  mutate(owner_au = replace_na(owner_au, "No Assignment"))
+
+missing_cols <- setdiff(unique(label_owner$owner_au), names(base_cols))
+
+group_label_cols_df <- label_owner %>%
+  arrange(owner_au, Group_label) %>%
+  group_by(owner_au) %>%
+  group_modify(~{
+    base <- base_cols[[as.character(.y$owner_au)]]
+    labels <- .x$Group_label
+    
+    tibble(
+      Group_label = labels,
+      col = colorRampPalette(c("white", base))(length(labels) + 1)[-1]
+    )
+  }) %>%
+  ungroup()
+
+group_label_cols <- setNames(
+  group_label_cols_df$col,
+  group_label_cols_df$Group_label
+)
+
+saveRDS(group_label_cols, out_group_label_cols_rds)
+
+# Optional color check
+barplot(
+  rep(1, length(group_label_cols)),
+  col = group_label_cols,
+  border = NA,
+  names.arg = names(group_label_cols),
+  las = 2,
+  cex.names = 0.3
+)
+
+# -----------------------------
+# Join PCA + metadata
+# -----------------------------
+pca.cluster <- pca_df %>%
+  left_join(
+    pops.groups.labels %>%
+      left_join(
+        label_owner %>% select(Group_label, owner_au),
+        by = "Group_label"
+      ) %>%
+      rename(ind = BGP_ID),
+    by = "ind"
+  ) %>%
+  mutate(
+    Group_label = trimws(as.character(Group_label)),
+    admix_group = replace_na(admix_group, "No Assignment"),
+    owner_au = replace_na(owner_au, "No Assignment")
+  )
+
+# -----------------------------
+# Legend order
+# -----------------------------
+if (!is.null(desired_order)) {
+  desired_order <- as.character(desired_order)
+  
+  missing_from_palette <- setdiff(desired_order, names(group_label_cols))
+  
+  if (length(missing_from_palette) > 0) {
+    warning(
+      "These labels are in desired_order but not in group_label_cols: ",
+      paste(missing_from_palette, collapse = ", ")
+    )
+  }
+  
+  legend_order <- c(
+    desired_order[desired_order %in% names(group_label_cols)],
+    sort(setdiff(names(group_label_cols), desired_order))
+  )
+} else {
+  legend_order <- sort(names(group_label_cols))
+}
+
+group_label_cols <- group_label_cols[legend_order]
+
+pca.cluster <- pca.cluster %>%
+  mutate(Group_label = factor(Group_label, levels = legend_order))
+
+# -----------------------------
+# Plot
+# -----------------------------
+p <- ggplot(
+  pca.cluster,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Group_label
+  )
+) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = group_label_cols,
+    limits = legend_order,
+    drop = FALSE,
+    name = "Sampling location\nColored by AU"
+  ) +
+  theme_classic() +
+  xlab(paste0("PC1 (", signif(pve$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve$pve[2], 3), "%)"))
+
+p
+
+ggsave(
+  filename = out_plot,
+  plot = p,
+  width = 6,
+  height = 4
+)
+
+grad_out$pca_plot
+
+pdf("../figures/pca_plots/BANS_K4_PCA_AU_coloring.pdf", width=6, height=4)
+print(grad_out$pca_plot)
+dev.off()
+```
+
+# GENOSCAPE SHAPE FILES
+I want to create shapefiles for each genetic group to get demographic data for, either from ebird population trends or BBS. Matt has function for this in Mignette, so install and load that package if you haven't already.
+```{r, message = FALSE, warning = FALSE}
+library(mignette)
+
+lamproj <- "+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+
+out_polygon <- "../outputs/BANS_AU_polygons_thresh.55_K3.shp"
+names(genoscape_brick) <- paste0("AU", 1:K)
+
+crs(genoscape_brick) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+genoscape_brick_spat <- terra::rast(genoscape_brick)
+genoscape_brick_proj <- terra::project(genoscape_brick_spat, lamproj, method = "near")
+
+genoscape_polygons <- mignette::scape_to_shape(x = genoscape_brick_proj, 
+                                               prob_threshold = 0.55,
+                                               d = 100,
+                                               f = 100,
+                                               s = 3)
+
+polygons <- ggplot() +
+  ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster), alpha=0.7)) +
+  #geom_sf(data = breeding_range, fill = NA, linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  #geom_sf(data = ocean, fill = "#bddbe6") +
+  #geom_sf(data = lakes, fill = "#bddbe6") +
+  #geom_spatial_point(data = long_lat_tibble, mapping = aes(x = Long, y = Lat), size=2) +
+  theme_void() + 
+  #theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1)) +
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)  # expand = FALSE means put the axes right at the xlim and ylim
+
+polygons
+st_write(genoscape_polygons, out_polygon, delete_dsn = TRUE)
+```

@@ -420,33 +420,43 @@ I'm going to pop that maf0.05 one over into an informatively named vcf:
 #SBATCH --job-name=bcftovcf
 #SBATCH --output=bcftovcf.%j.out
 #SBATCH --error=bcftovcf.%j.err
-#SBATCH -t 12:00:00
+#SBATCH -t 2:00:00
 #SBATCH --partition=amilan
 #SBATCH --qos=normal
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node 16
-#SBATCH --mem=59G
+#SBATCH --ntasks-per-node 4
+#SBATCH --mem=12G
 #SBATCH --mail-type=END,FAIL
 #SBATCH  --mail-user=ericacnr@colostate.edu
 
+set -x
+source ~/.bashrc
+
+conda activate bioinf
+
+DIR="results/bqsr-round-0"
 INPUT_FILE="bcf/all.bcf"
 OUT="vcf/BANS.all.ds6x.pass-maf-0.05.SNP.vcf.gz"
+
+mkdir -p "results/bqsr-round-0/vcf/"
 
 #filter for PASS sites, MAF >= 0.05, and keep only biallelic SNPs, filter out sites with >20% missing data (F_MISSING > 0.2)
 bcftools view --threads 8 \
     -i 'FILTER="PASS" & MAF>=0.05' \
-    -v snps -m2 -M2 "$INPUT_FILE" \
+    -v snps -m2 -M2 $DIR/$INPUT_FILE \
 | bcftools filter --threads 8 \
     -e 'F_MISSING > 0.2' \
-    -Oz -o "$OUT"
+    -Oz -o $DIR/$OUT
+    
 
 echo "Output file: $OUT"
-  
-bcftools index --threads 16 vcf/BANS.all.ds6x.pass-maf-0.05.SNP.vcf.gz
+
+bcftools index --threads 16 $DIR/vcf/BANS.all.ds6x.pass-maf-0.05.SNP.vcf.gz
 ```
 
+Checking how many SNPs are in each chromosome.
 ```{bash}
-OUT="vcf/BANS.all.ds6x.pass-maf-0.05.SNP.vcf.gz"
+OUT="results/bqsr-round-0/vcf/BANS.all.ds6x.pass-maf-0.05.SNP.vcf.gz"
 bcftools query -f '%CHROM\n' $OUT | uniq -c
 ```
 
@@ -476,30 +486,31 @@ source ~/.bashrc
 
 #run this from the 01.fastq_processing
 
-mkdir -p vcf/filtered_HC
-
 ##Location of fasta file and
 REFERENCE="/scratch/alpine/ericacnr@colostate.edu/BANS/01.fastq_processing/mega-non-model-wgs-snakeflow/resources/genome.fasta"
+DIR="results/bqsr-round-0"
 IN="vcf/BANS.all.ds6x.pass-maf-0.05.SNP.vcf.gz"
 OUT="vcf/filtered_HC"
+
+mkdir -p $DIR/$OUT
 
 conda activate gatk_4
 ###Select variants- SNPs
 java -Djava.io.tmpdir=/scratch/alpine/ericacnr@colostate.edu/tmp -Xmx37g -jar /curc/sw/install/bio/gatk/4.3.0.0/gatk-package-4.3.0.0-local.jar IndexFeatureFile \
-  -I $IN
+  -I $DIR/$IN
   
 java -Djava.io.tmpdir=/scratch/alpine/ericacnr@colostate.edu/tmp -Xmx37g -jar /curc/sw/install/bio/gatk/4.3.0.0/gatk-package-4.3.0.0-local.jar SelectVariants \
      -R $REFERENCE \
-     -V $IN \
+     -V $DIR/$IN \
      -select-type SNP \
-     --O $OUT/BANS.all.ds6x.pass-maf-0.05.SNP.vcf
+     --O $DIR/$OUT/BANS.all.ds6x.pass-maf-0.05.SNP.vcf
 
 #the lines before remove some of the annotations I need for later filtering
 java -Djava.io.tmpdir=/scratch/alpine/ericacnr@colostate.edu/tmp -Xmx37g \
   -jar /curc/sw/install/bio/gatk/4.3.0.0/gatk-package-4.3.0.0-local.jar VariantAnnotator \
   -R $REFERENCE \
-  -V $OUT/BANS.all.ds6x.pass-maf-0.05.SNP.vcf \
-  -O $OUT/BANS.all.ds6x_gatk.pass-maf-0.05.SNP.annot.vcf.gz \
+  -V $DIR/$OUT/BANS.all.ds6x.pass-maf-0.05.SNP.vcf \
+  -O $DIR/$OUT/BANS.all.ds6x_gatk.pass-maf-0.05.SNP.annot.vcf.gz \
   -A BaseQualityRankSumTest \
   -A MappingQualityRankSumTest \
   -A ReadPosRankSumTest
@@ -508,7 +519,7 @@ java -Djava.io.tmpdir=/scratch/alpine/ericacnr@colostate.edu/tmp -Xmx37g \
 
 java -Djava.io.tmpdir=/scratch/alpine/ericacnr@colostate.edu/tmp -Xmx37g -jar /curc/sw/install/bio/gatk/4.3.0.0/gatk-package-4.3.0.0-local.jar VariantFiltration \
 -R $REFERENCE \
--V $OUT/BANS.all.ds6x_gatk.pass-maf-0.05.SNP.annot.vcf.gz \
+-V $DIR/$OUT/BANS.all.ds6x_gatk.pass-maf-0.05.SNP.annot.vcf.gz \
 -filter "QUAL < 30.0" --filter-name "QUAL30" \
 -filter "SOR > 3.0" --filter-name "SOR3" \
 -filter "FS > 60.0" --filter-name "FS60" \
@@ -516,42 +527,47 @@ java -Djava.io.tmpdir=/scratch/alpine/ericacnr@colostate.edu/tmp -Xmx37g -jar /c
 -filter "QD < 2.0" --filter-name "QD2" \
 -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" \
 -filter "ReadPosRankSum < -8.0" --filter-name "ReadPosRankSum-8" \
--O $OUT/BANS.all.ds6x_gatk.SNP.05maf.VQSR2.vcf
+-O $DIR/$OUT/BANS.all.ds6x_gatk.SNP.05maf.hardfilter.vcf
 
 #Exclude filtered variants (PASS= pass filters)
 java -Djava.io.tmpdir=/scratch/alpine/ericacnr@colostate.edu/tmp -Xmx37g -jar /curc/sw/install/bio/gatk/4.3.0.0/gatk-package-4.3.0.0-local.jar  SelectVariants \
      -R $REFERENCE \
-     -V $OUT/BANS.all.ds6x_gatk.SNP.05maf.VQSR2.vcf \
+     -V $DIR/$OUT/BANS.all.ds6x_gatk.SNP.05maf.hardfilter.vcf \
      --exclude-filtered  true \
-     -O $OUT/BANS.all.ds6x_gatk.SNP.05maf.VQSR2.PASS.vcf
-
-conda activate bioinf
-
-<!-- ##VCFtools for filtering based on missingness, once you remove systematic errors. Play around with this to get the numbers you want and make sense -->
-<!-- vcftools --vcf $OUT/BANS.all.ds6x_gatk.SNP.05maf.VQSR2.PASS.vcf --out $OUT/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.0.8miss.recode.vcf --max-missing 0.8 --recode --recode-INFO-all -->
+     -O $DIR/$OUT/BANS.all.ds6x_gatk.SNP.05maf.hardfilter.PASS.vcf
 ```
 
-Yay! Head on over to vcf_eval to do some tests for batch effects and missingness stuff.
+Optional initial missingness filtering, but see below for individual level filtering first.
+```{bash}
+conda activate bioinf
+
+##VCFtools for filtering based on missingness, once you remove systematic errors. Play around with this to get the numbers you want and make sense -->
+vcftools --vcf $DIR/$OUT/BANS.all.ds6x_gatk.SNP.05maf.VQSR2.PASS.vcf --out $DIR/$OUT/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.0.8miss.recode.vcf --max-missing 0.8 --recode --recode-INFO-all
+```
 
 ## filtering for individual level missingness before loci level 
 
 From within vcf_file. Will this give me more loci? Theoretically, having high missing indv would bias the missingness at loci level to a higher level so they would get filtered out. So dropping high indv missing would result in more snps.
 
-```{bash}
-vcftools --vcf BANS.all.ds6x_gatk.SNP.05maf.VQSR2.PASS.vcf --missing-indv
-# filter out those individuals missing more than 30% of genome wide information
 <!-- After filtering, kept 229 out of 229 Individuals -->
 <!-- Outputting Individual Missingness -->
 <!-- After filtering, kept 3124563 out of a possible 3124563 Sites -->
+
+```{bash}
+vcftools --gzvcf BANS.all.ds6x.pass-maf-0.05.SNP.vcf.gz --missing-indv
+# filter out those individuals missing more than 30% of genome wide information
+<!-- After filtering, kept 229 out of 229 Individuals -->
+<!-- Outputting Individual Missingness -->
+<!-- After filtering, kept 5219653 out of a possible 5219653 Sites -->
 
 #filt ind with less than 30% overall missingness
 awk 'NR>1 && $5 > 0.3 {print $1}' out.imiss > bad_ind
 wc -l bad_ind
 
 # then filter SNP level missingness
-vcftools --vcf BANS.all.ds6x_gatk.SNP.05maf.VQSR2.PASS.vcf --remove bad_ind --out BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss --max-missing 0.8 --recode --recode-INFO-all
+vcftools --gzvcf BANS.all.ds6x.pass-maf-0.05.SNP.vcf.gz --remove bad_ind --out filtered_HC/BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss --max-missing 0.8 --recode --recode-INFO-all
 
-<!-- After filtering, kept 209 out of 229 Individuals -->
+<!-- After filtering, kept 206 out of 229 Individuals -->
 <!-- Outputting VCF file... -->
 <!-- After filtering, kept 3124151 out of a possible 3124563 Sites -->
 
@@ -560,7 +576,7 @@ vcftools --vcf BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.re
 bcftools stats BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.vcf > BANS.all.ds6x.pass-maf-0.05.bialSNP.filtered.ind03miss.0.8miss.recode.stats
 
 awk 'NR>1 {sum += (1-$5)} END {print sum/NR}' out.imiss
-#0.870299
+#0.883732
 ```
 
 That is, in fact, what happened! 3124151 with this type of filtering. 209 samples left.
