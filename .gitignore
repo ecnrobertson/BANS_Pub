@@ -3,6 +3,9 @@
 .RData
 .Ruserdata
 
+#manuscript
+manuscript
+
 #01.fastq_processing
 analysis/01.fastq_processing/scratch/pca_inputs
 analysis/01.fastq_processing/scratch/pca_outputs
