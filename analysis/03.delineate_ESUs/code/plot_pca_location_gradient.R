@@ -3,7 +3,8 @@ plot_pca_location_gradient <- function(plink_pca,
                                        cols,
                                        pops,
                                        admix_groups,
-                                       letters,
+                                       geo_key,
+                                       desired_order = NULL,
                                        out_plot = NULL,
                                        out_letter_cols_rds = NULL,
                                        width = 8.5,
@@ -34,9 +35,17 @@ plot_pca_location_gradient <- function(plink_pca,
   pops.groups <- dplyr::left_join(pops2, admix_groups2, by = "BGP_ID")
   
   # letters table may use Pop instead of Group
-  letters2 <- letters
+  letters2 <- geo_key
+  
   if ("Pop" %in% names(letters2) && !"Group" %in% names(letters2)) {
     letters2 <- letters2 %>% dplyr::rename(Group = Pop)
+  }
+  
+  # Allow either cluster_letter or Group_label
+  if ("Group_label" %in% names(letters2) &&
+      !"cluster_letter" %in% names(letters2)) {
+    letters2 <- letters2 %>%
+      dplyr::rename(cluster_letter = Group_label)
   }
   
   stopifnot(all(c("Group", "cluster_letter") %in% names(letters2)))
@@ -51,24 +60,39 @@ plot_pca_location_gradient <- function(plink_pca,
   ESUs <- names(cols)
   
   # determine majority-owner ESU for each cluster letter
+  # letter_owner <- pops.groups.letters %>%
+  #   dplyr::filter(
+  #     !is.na(cluster_letter),
+  #     !is.na(admix_group),
+  #     admix_group %in% ESUs
+  #   ) %>%
+  #   dplyr::count(cluster_letter, admix_group, name = "n") %>%
+  #   dplyr::group_by(cluster_letter) %>%
+  #   dplyr::slice_max(n, n = 1, with_ties = FALSE) %>%
+  #   dplyr::ungroup() %>%
+  #   dplyr::rename(owner_esu = admix_group)
   letter_owner <- pops.groups.letters %>%
-    dplyr::filter(
-      !is.na(cluster_letter),
-      !is.na(admix_group),
-      admix_group %in% ESUs
-    ) %>%
-    dplyr::count(cluster_letter, admix_group, name = "n") %>%
-    dplyr::group_by(cluster_letter) %>%
-    dplyr::slice_max(n, n = 1, with_ties = FALSE) %>%
-    dplyr::ungroup() %>%
-    dplyr::rename(owner_esu = admix_group)
+    filter(!is.na(cluster_letter)) %>%
+    count(cluster_letter, admix_group, name = "n") %>%
+    group_by(cluster_letter) %>%
+    slice_max(n, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(
+      owner_esu = if_else(
+        is.na(admix_group),
+        "Unassigned",
+        as.character(admix_group)
+      )
+    )
+  
+  cols2 <- c(cols, Unassigned = "grey70")
   
   # build letter-level gradient palette within each owner ESU
   letter_cols_df <- letter_owner %>%
     dplyr::arrange(owner_esu, cluster_letter) %>%
     dplyr::group_by(owner_esu) %>%
     dplyr::group_modify(~{
-      base <- cols[[.y$owner_esu]]
+      base <- cols2[[.y$owner_esu]]
       L <- .x$cluster_letter
       n <- length(L)
       shades <- grDevices::colorRampPalette(c("white", base))(n + 1)[-1]
@@ -106,7 +130,34 @@ plot_pca_location_gradient <- function(plink_pca,
     dplyr::mutate(cluster_letter = trimws(as.character(cluster_letter)))
   
   # lock palette mapping
-  letter_cols <- letter_cols[order(names(letter_cols))]
+  # letter_cols <- letter_cols[order(names(letter_cols))]
+  if (!is.null(desired_order)) {
+    desired_order <- as.character(desired_order)
+    
+    missing_from_palette <- setdiff(desired_order, names(letter_cols))
+    if (length(missing_from_palette) > 0) {
+      warning(
+        "These letters are in desired_order but not in letter_cols: ",
+        paste(missing_from_palette, collapse = ", ")
+      )
+    }
+    
+    letters_not_ordered <- setdiff(names(letter_cols), desired_order)
+    
+    legend_order <- c(
+      desired_order[desired_order %in% names(letter_cols)],
+      sort(letters_not_ordered)
+    )
+  } else {
+    legend_order <- sort(names(letter_cols))
+  }
+  
+  letter_cols <- letter_cols[legend_order]
+  
+  pca.cluster <- pca.cluster %>%
+    dplyr::mutate(
+      cluster_letter = factor(cluster_letter, levels = legend_order)
+    )
   
   # plot
   p <- ggplot2::ggplot(
@@ -128,7 +179,7 @@ plot_pca_location_gradient <- function(plink_pca,
     ggplot2::geom_point(size = 3) +
     ggplot2::scale_color_manual(
       values = letter_cols,
-      limits = names(letter_cols),
+      limits = legend_order,
       drop = FALSE,
       name = "Sampling location\nColored by ESU"
     ) +

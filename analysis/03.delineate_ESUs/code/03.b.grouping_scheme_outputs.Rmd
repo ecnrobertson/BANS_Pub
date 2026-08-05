@@ -27,18 +27,15 @@ library(grid)
 ```
 
 # INTRODUCTION
-After evaluating the basic population structure information we can potentially make multiple different genetically based ESU groupings. And, when comparing with the migration data, we might subdivide some ESUs into MUs. For each of these options, we need a genoscape, and admixture plot for that k value (genomic options only), and some colored PCAs. Potential schemes are:
+After evaluating the basic population structure information we can potentially make multiple different genetically based ESU groupings. For each of these options, we need a genoscape, and admixture plot for that K value. Potential schemes are:
 
-G4 - genomics only, K of 4
-G5 - genomics only, K of 5
-GM5 - G4 + migration, K of 5
-GM6 - G5 + migration, K of 6
+G4 - K of 4
+G5 - K of 5
+G6 - K of 6
 
 The following will be the initial code walk-through for G4, then implementation of functions to tidy up the rest and make iteration easier. The K values used for the following admixture and genoscapes are calculated using ANGST PCA functions, as described in 03.a.initial_popstructure.Rmd.
 
-When I've done the genomics only files, I'll show careful code for how I force the split based on the migration data and generate the PCAs and genoscapes for that. No admixture plots are output for these as they would be misleading to interpret.
-
-Finally, I read back in the genoscape outputs for each grouping scheme and run them in mignette (custom R package designed by Matt Desaix) to get conservation unit polygons that go into the spatial analysis later.
+I read back in the genoscape outputs for each grouping scheme and run them in mignette (custom R package designed by Matt Desaix) to get conservation unit polygons that go into the spatial analysis later.
 
 # GENOMICS ONLY ESU DELINEATION
 ## G4
@@ -47,9 +44,9 @@ To start, load the .Q file. Load the admixture proportions and merge with a samp
 
 The admixture outputs (.Q files) don't have sample associated with them. Because I used the plink ped files as my input for ANGST when making these the sample order will be uniform across .Q files and the overall PCA eigen files. So, we can use the eigen files to pull the sample IDs.
 ```{r, message=FALSE, warning=FALSE}
-Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e3.run1.admix.4.Q") %>%
+Q_tibble <- read.table("../scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e3.run1.admix.4.Q") %>%
   setNames(paste0("ESU", 1:4))
-pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE) %>% dplyr::select(-V2)
 
 colnames(pca_df)[-1] <- paste0("PC", 1:(ncol(pca_df) - 1))
 names(pca_df)[1] <- "ind"
@@ -128,7 +125,7 @@ genoscape_brick <- tess3r::tess3Q_map_rasters(
   map.polygon = breeding_na,
   window = extent(breeding_na)[1:4],
   resolution = c(1000,1000), # if you want more cells in your raster, set higher
-  # this next lines need to to be here, but don't do much...
+  # this next lines need to be here, but don't do much...
   col.palette = tess3r::CreatePalette(cols, K), 
   method = "map.max", 
   interpol = tess3r::FieldsKrigModel(10),  
@@ -153,7 +150,7 @@ genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
   TRB = genoscape_brick,
   cols = cols, 
   alpha_scale = 3, 
-  abs_thresh = 0.0, 
+  abs_thresh = .5, 
   alpha_exp = 1.55, 
   alpha_chop_max = 230
 )
@@ -191,12 +188,12 @@ coords_sf <- st_as_sf(
 )
 
 # then we want to get the sample points as coded by letter, which I established previously
-cluster_geo <- read.csv("../scratch/cluster_letter_key_geo_lonlat.csv")
+cluster_geo <- readRDS("../scratch/geo_informative_labels_centroids.RDS")
 
 ## make sf points from lon/lat
 cluster_geo_sf <- st_as_sf(
   cluster_geo,
-  coords = c("cen_lon", "cen_lat"),
+  coords = c("Y", "X"),
   crs = 4326,      # lon/lat
   remove = FALSE
 )
@@ -223,9 +220,9 @@ genoscape <- ggplot() +
   expand = FALSE)+
   geom_label_repel(
     data = cluster_geo_sf,
-    aes(label = cluster_letter, geometry = geometry),
+    aes(label = Group_label, geometry = geometry),
     stat = "sf_coordinates",
-    size = 2.5,            # increase text size (try 2.2–3.0
+    size = 2,            # increase text size (try 2.2–3.0
     fontface = "bold",
     label.size = .2,
     fill = "white",
@@ -266,65 +263,124 @@ dev.off()
 ### Admixture Plots
 Alright, now we just want an appropriately colored admixture plot for each K value we've selected.
 ```{r}
-# which K value do we want to pull?
 K_target <- 4
 
-# read in the Q files and pca files
-Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e3.run1.admix.4.Q") %>%
-  setNames(paste0("ESU", 1:5))
-pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+# Read Q file
+Q_tibble <- read.table(
+  "../scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e3.run1.admix.4.Q"
+) %>%
+  rename(
+    ESU1 = V1,
+    ESU2 = V2,
+    ESU3 = V3,
+    ESU4 = V4
+  )
+
+# Read PCA file
+pca_df <- read.table(
+  "../scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec",
+  header = FALSE
+) %>%
+  dplyr::select(-V2)
 
 colnames(pca_df)[-1] <- paste0("PC", 1:(ncol(pca_df) - 1))
 names(pca_df)[1] <- "ind"
 
-Q_tibble$ind <- pca_df$ind
+# Make sure the row orders match in length
+stopifnot(nrow(Q_tibble) == nrow(pca_df))
 
-# colors from before, just renamed
-component_colors <- cols
+# Add individual IDs
+Q_tibble <- Q_tibble %>%
+  mutate(ind = pca_df$ind)
+
+# Colors
+component_colors <- readRDS("../figures/colors/CU_grouping_colors_2_G4.rds")
+names(component_colors) <- paste0("ESU", 1:K_target)
 
 # Cluster membership and letter
-pops <- read_csv("../scratch/pops.csv", show_col_types = FALSE) %>%
+pops <- read.csv("../scratch/pops.csv") %>%
   transmute(ind = BGP_ID, Group)
 
-letter_key <- read_csv("../scratch/cluster_letter_key_geo_lonlat.csv", show_col_types = FALSE)
+letter_key <- read.csv("../scratch/cluster_letter_key_geo_lonlat.csv")
 
-pops.cluster.letter <- left_join(pops, letter_key, by="Group")
+# Check joins will not duplicate individuals
+stopifnot(!anyDuplicated(pops$ind))
+stopifnot(!anyDuplicated(letter_key$Group))
+
+pops.cluster.letter <- pops %>%
+  left_join(letter_key, by = "Group")
 
 Q_tibble2 <- Q_tibble %>%
-  left_join(pops.cluster.letter, by = "ind") %>%
+  left_join(pops.cluster.letter, by = "ind")
+
+# Check join did not change row number
+stopifnot(nrow(Q_tibble2) == nrow(Q_tibble))
+
+Q_tibble2 <- Q_tibble2 %>%
   filter(!is.na(cluster_letter))
 
-# Long format for ggplot
+# Desired facet order
+desired_order <- c(
+  "A", "B", "C", "E", "H", "J", "L", "O", "P", "Q", "R", "S", 
+  "T", "U", 
+  "G", "I", "K", "M", "N",
+  "D", "F"
+)
+
+# Preserve individual order from the Q file, grouped by desired letter order
+ind_order <- Q_tibble2 %>%
+  mutate(cluster_letter = factor(cluster_letter, levels = desired_order)) %>%
+  arrange(cluster_letter) %>%
+  pull(ind) %>%
+  unique()
+
+# Long format
 q_long <- Q_tibble2 %>%
-  pivot_longer(cols = starts_with("ESU"),
-               names_to = "popGroup",
-               values_to = "prob")%>%
   mutate(
-    cluster_letter = factor(cluster_letter, levels = unique(letter_key$cluster_letter)),
+    cluster_letter = factor(cluster_letter, levels = desired_order),
+    ind = factor(ind, levels = ind_order)
+  ) %>%
+  pivot_longer(
+    cols = all_of(paste0("ESU", 1:K_target)),
+    names_to = "popGroup",
+    values_to = "prob"
+  ) %>%
+  mutate(
     popGroup = factor(popGroup, levels = paste0("ESU", 1:K_target))
   )
 
+# Diagnostic: check letter-to-dominant-ESU association
+q_long %>%
+  group_by(ind, cluster_letter, popGroup) %>%
+  summarize(prob = first(prob), .groups = "drop") %>%
+  group_by(ind, cluster_letter) %>%
+  slice_max(prob, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  count(cluster_letter, popGroup)
+
 # Plot
-K_plot <- ggplot(q_long, aes(x = factor(ind), y = prob, fill = factor(popGroup))) +
+K_plot <- ggplot(q_long, aes(x = ind, y = prob, fill = popGroup)) +
   geom_col(color = "gray", linewidth = 0.1) +
   facet_grid(~cluster_letter, switch = "x", scales = "free", space = "free") +
   theme_minimal() +
   labs(x = "", y = "Ancestry", title = "") +
   scale_y_continuous(expand = c(0, 0)) +
   scale_x_discrete(expand = expansion(add = 1)) +
+  scale_fill_manual(values = component_colors, guide = "none") +
   theme(
     panel.spacing.x = unit(0.001, "lines"),
     axis.text.x = element_blank(),
     strip.text.x = element_text(angle = 0, vjust = 0.5, hjust = 0.5, size = 8),
     panel.grid = element_blank()
-  ) +
-  scale_fill_manual(values = component_colors, guide = "none")
+  )
 
 K_plot
 
-out_plot <- "../figures/admix_plots/BANS_admix_overall_alpha0_G4_letters.png"
+ggsave("../figures/admix_plots/BANS_admix_overall_alpha0_G4_letters_ordered.png")
 
-ggsave(out_plot, K_plot, width = 10, height = 2.2, units = "in", dpi = 300, bg = "white")
+pdf("../figures/admix_plots/BANS_admix_overall_alpha0_G4_letters_ordered.pdf", width = 10, height = 2.2)
+print(K_plot)
+dev.off()
 ```
 
 Then we need this little admix assignment code for the colored PCA in the next step...
@@ -510,68 +566,33 @@ rel.nr
 ggsave("../figures/pca/BANS_ESU_K5_PCA_norel_locationcoloring.png", width = 8.5, height = 7)
 ```
 
-# GENOMICS ESU AND MIGRATION MU DELINEATION
-So the trick here is start with a base of one of the genomic delineations and then force a split between the Alaska group and the East coast. I generated a forced ESU delineation by reassigning individuals from specified sampling clusters to a new ESU and setting their existing ancestry coefficients to zero, resulting in a modified Q matrix used for downstream analyses and visualization. Basically just forcing assignment for these locations into a new group.
-
-*This chunk isn't automated* so make sure the inputs are right!
-```{r, message=FALSE, warning=FALSE}
-# Input files, the based Q file I'm going to force
-Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e4.run1.admix.5.Q") %>%
-  setNames(paste0("ESU", 1:5))
-
-pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>%
-  dplyr::select(-V2)
-
-colnames(pca_df)[-1] <- paste0("PC", 1:(ncol(pca_df) - 1))
-names(pca_df)[1] <- "ind"
-
-Q_tibble <- Q_tibble %>%
-  mutate(Sample = pca_df$ind)
-
-# Read groups and corresponding letters
-pops <- read_csv(
-  "../scratch/pops.csv",
-  show_col_types = FALSE
-) %>%
-  transmute(Sample = BGP_ID, Group)
-
-cluster_geo <- read_csv(
-  "../scratch/cluster_letter_key_geo_lonlat.csv",
-  show_col_types = FALSE
-) %>%
-  dplyr::select(Group, cluster_letter)
-
-# letters to force into new ESU
-letters_new_esu <- c("Q", "R", "S", "T", "O", "P")
-
-# Force the split, change the "ESU6" here to the appropriate number...
-Q_tibble_forced <- Q_tibble %>%
-  left_join(pops, by = "Sample") %>%
-  left_join(cluster_geo, by = "Group") %>%
-  mutate(
-    force_ESU = cluster_letter %in% letters_new_esu
-  ) %>%
-  mutate(
-    across(starts_with("ESU"), ~ if_else(force_ESU, 0, .x)),
-    ESU6 = if_else(force_ESU, 1, 0)
-  ) %>%
-  dplyr::select(starts_with("ESU"))
-
-Q_tibble_forced
-saveRDS(Q_tibble_forced, "../scratch/admix_output/BANS_GM6_forced_Q_tibble.RDS")
-```
-
 # FUNCTIONS
-(Note, the following functions were generated using ChatGPT based on the above written out code that I produced, interpretation of results in my own)
+(Note, the following functions were generated using ChatGPT based on the above written out code that I produced, interpretation of results is my own)
 ## Color Pallets
 The trick here is to get the color right for the spatial ESU rather than having the numbers be the same, cause the numbers aren't consistent across space with different K values.
 ```{r}
 # G4
+cols_G3 <-  c(
+  "ESU1" = "#FF5A5F",
+  "ESU2" = "#187795",
+  "ESU3" = "#FFBF46")
+barplot(
+  rep(1, length(cols_G3)),
+  col = cols_G3,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G3),
+  las = 2
+)
+saveRDS(cols_G3, "../figures/colors/CU_grouping_colors_3_G3.rds")
+
+# G4
 cols_G4 <-  c(
-  "ESU1" = "#C1839F",
-  "ESU2" = "#FF5A5F",
-  "ESU3" = "#8ACB88",
-  "ESU4" = "#FFBF46")
+  "ESU1" = "#FF5A5F",
+  "ESU2" = "#187795",
+  "ESU3" = "#FFBF46",
+  "ESU4" = "#C1839F")
 barplot(
   rep(1, length(cols_G4)),
   col = cols_G4,
@@ -581,7 +602,7 @@ barplot(
   names.arg = names(cols_G4),
   las = 2
 )
-saveRDS(cols_G4, "../figures/colors/CU_grouping_colors_2_G4.rds")
+saveRDS(cols_G4, "../figures/colors/CU_grouping_colors_3_G4.rds")
 
 # G5
 cols_G5 <-  c(
@@ -601,26 +622,25 @@ barplot(
 )
 saveRDS(cols_G5, "../figures/colors/CU_grouping_colors_2_G5.rds")
 
-# GM5
-cols_GM5 <-  c(
-  "ESU1" = "#C1839F",
+cols_G5 <-  c(
+  "ESU1" = "#187795",
   "ESU2" = "#FF5A5F",
-  "ESU3" = "#8ACB88",
-  "ESU4" = "#FFBF46",
-  "ESU5" = "#247B7B")
+  "ESU3" = "#FFBF46",
+  "ESU4" = "#C1839F",
+  "ESU5" = "#8ACB88")
 barplot(
-  rep(1, length(cols_GM5)),
-  col = cols_GM5,
+  rep(1, length(cols_G5)),
+  col = cols_G5,
   border = NA,
   axes = FALSE,
   space = 0,
-  names.arg = names(cols_GM5),
+  names.arg = names(cols_G5),
   las = 2
 )
-saveRDS(cols_GM5, "../figures/colors/CU_grouping_colors_2_GM5.rds")
+saveRDS(cols_G5, "../figures/colors/CU_grouping_colors_3_G5.rds")
 
-# GM6
-cols_GM6 <-  c(
+# G6
+cols_G6 <-  c(
   "ESU1" = "#FF5A5F",
   "ESU2" = "#FFBF46",
   "ESU3" = "#2589BD",
@@ -628,15 +648,15 @@ cols_GM6 <-  c(
   "ESU5" = "#8ACB88",
   "ESU6" = "#247B7B")
 barplot(
-  rep(1, length(cols_GM6)),
-  col = cols_GM6,
+  rep(1, length(cols_G6)),
+  col = cols_G6,
   border = NA,
   axes = FALSE,
   space = 0,
-  names.arg = names(cols_GM6),
+  names.arg = names(cols_G6),
   las = 2
 )
-saveRDS(cols_GM6, "../figures/colors/CU_grouping_colors_2_GM6.rds")
+saveRDS(cols_G6, "../figures/colors/CU_grouping_colors_2_G6.rds")
 ```
 
 ## Genoscapes
@@ -645,26 +665,34 @@ source("prep_genoscape_inputs.R")
 source("build_genoscape_surfaces.R")
 
 ############# PICK A K VALUE #############
-scheme <- "GM6"
-K <- 6
+scheme <- "G3"
+K <- 3
 # read in data, either raw or forced
-#Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e4.run1.admix.5.Q") %>%
-#  setNames(paste0("ESU", 1:K))
-Q_tibble <- readRDS("../scratch/admix_output/BANS_GM6_forced_Q_tibble.RDS")
+Q_tibble <- read.table("../scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e2.run1.admix.3.Q") %>%
+setNames(paste0("ESU", 1:K))
 
+scheme <- "G5"
+K <- 5
+# read in data, either raw or forced
+Q_tibble <- read.table("../scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e4.run1.admix.5.Q") %>%
+setNames(paste0("ESU", 1:K))
 
-out_plot_genoscape_png <- paste0("BANS_genoscape_",scheme,"_overall.png")
-out_plot_genoscape_pdf <- paste0("BANS_genoscape_",scheme,"_overall.pdf")
+scheme <- "G4"
+K <- 4
+Q_tibble <- read.table("../scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e3.run1.admix.4.Q") %>%
+setNames(paste0("ESU", 1:K))
+
+out_plot_genoscape_png <- paste0("BANS_genoscape_",scheme,"_overall_final.png")
+out_plot_genoscape_pdf <- paste0("BANS_genoscape_",scheme,"_overall_final.pdf")
 genoscape_path <- "../figures/genoscape_plots/"
 genoscape_brick_out <- paste0("../scratch/genoscape_output/BANS_overall_genoscape_brick_pcadmix_",scheme,".tif")
-cols <- readRDS(paste0("../figures/colors/CU_grouping_colors_2_",scheme,".rds"))
+cols <- readRDS(paste0("../figures/colors/CU_grouping_colors_3_",scheme,".rds"))
 barplot(rep(1, length(cols)), col = cols, border = NA, axes = FALSE, space = 0, names.arg = names(cols), las = 2)
 
 ############# OTHER INPUT FILES #############
-pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE)
+pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE)
 
 all <- read_csv("../../../raw_data/BANS_all_sample_data_shifted.csv")
-
 ############# MAKE Q_TIBBLE #############
 prep_out <- prep_genoscape_inputs(
   Q_tibble = Q_tibble,
@@ -676,8 +704,8 @@ Q_tibble <- prep_out$Q_tibble
 Q_matrix <- prep_out$Q_matrix
 long_lat_matrix <- prep_out$long_lat_matrix
 LatLong_tibble <- prep_out$LatLong_tibble
-K <- prep_out$K
-bad <- prep_out$bad
+K <- ncol(Q_matrix)
+q_cols <- colnames(Q_matrix)
 
 ############# GET BASE MAP AND RANGE #############
 map <- ne_states(
@@ -700,8 +728,10 @@ surf_out <- build_genoscape_surfaces(
   breeding_na = breeding_na,
   cols = cols,
   K = K,
-  brick_names = names(Q_tibble)[-(K + 1)],
-  out_tif = "../scratch/genoscape_output/BANS_overall_genoscape_brick_pcadmix_G4.tif"
+  brick_names = q_cols,
+  out_tif = genoscape_brick_out,
+  alpha_threshold = 0,
+  krig_val = 30
 )
 
 genoscape_brick <- surf_out$genoscape_brick
@@ -715,12 +745,12 @@ coords_sf <- st_as_sf(
 )
 
 # then we want to get the sample points as coded by letter, which I established previously
-cluster_geo <- read.csv("../scratch/cluster_letter_key_geo_lonlat.csv")
+cluster_geo <- readRDS("../scratch/geo_informative_labels_centroids.RDS")
 
 ## make sf points from lon/lat
 cluster_geo_sf <- st_as_sf(
   cluster_geo,
-  coords = c("cen_lon", "cen_lat"),
+  coords = c("Y", "X"),
   crs = 4326,      # lon/lat
   remove = FALSE
 )
@@ -738,7 +768,8 @@ genoscape <- ggplot() +
   geom_sf(data = lakes, fill = "#bddbe6") + #bddbe6
   #geom_spatial_point(data = long_lat_tibble, mapping = aes(x = Long, y = Lat), size=1, alpha = 0.7) + 
   theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1)) +
-  geom_sf(data=cluster_geo_sf)+
+  geom_sf(data=cluster_geo_sf,
+          size = 0.5)+
   coord_sf(
   crs = st_crs(lamproj),
   xlim = c(bb["xmin"], bb["xmax"]),
@@ -746,22 +777,24 @@ genoscape <- ggplot() +
   expand = FALSE)+
   geom_label_repel(
     data = cluster_geo_sf,
-    aes(label = cluster_letter, geometry = geometry),
+    aes(label = Group_label, geometry = geometry),
     stat = "sf_coordinates",
-    size = 2.5,            # increase text size (try 2.2–3.0
+    size = 1.5,            # increase text size (try 2.2–3.0
     fontface = "bold",
-    label.size = .2,
+    label.size = .1,
+    label.padding = unit(0.1, "lines"),
+    label.r=0,
     fill = "white",
     alpha = 1,
-    box.padding = 0.25,
-    point.padding = 0.2,
+    point.padding = 0.1,
     segment.color = "black",
-    segment.size = 0.5,
+    segment.size = 0.25,
     min.segment.length = 0
 )
 genoscape
 
 ############# SAVE THE GENOSCAPE #############
+out_plot_genoscape_png <- paste0("BANS_genoscape_",scheme,"_overall_newcol2.png")
 ggsave(plot=genoscape, path=genoscape_path, filename=out_plot_genoscape_png, width = 7, height = 4.5)
 
 pdf(paste0(genoscape_path,out_plot_genoscape_pdf))
@@ -773,44 +806,62 @@ dev.off()
 ```{r}
 source("make_admix_barplot_and_assignments.R")
 
-######## G4/5 INPUT #########
+######## INPUT #########
+K <- 3
+out_plot_admix <- "BANS_admix_overall_alpha0_G3_letters_2.png"
+admix_plot_path <- "../figures/admix_plots/"
+
+out_group_admix <- "BANS_admix_grouping_G3_2.tsv"
+admix_group_path <- "../scratch/admix_output/"
+
+Q_tibble <- read.table("../scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e2.run1.admix.3.Q") %>%
+setNames(paste0("ESU", 1:K))
+cols <- readRDS("../figures/colors/CU_grouping_colors_3_G3.rds")
+
 K <-  5
-out_plot_admix <- "BANS_admix_overall_alpha0_G5_letters.png"
+out_plot_admix <- "BANS_admix_overall_alpha0_G5_letters_2.png"
 admix_plot_path <- "../figures/admix_plots/"
 
-out_group_admix <- "BANS_admix_grouping_G5.tsv"
+out_group_admix <- "BANS_admix_grouping_G5_2.tsv"
 admix_group_path <- "../scratch/admix_output/"
 
-Q_tibble <- read.table("../scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e4.run1.admix.5.Q") %>%
+Q_tibble <- read.table("../scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e4.run1.admix.5.Q") %>%
   setNames(paste0("ESU", 1:K))
-cols <- readRDS("../figures/colors/CU_grouping_colors_2_G5.rds")
+cols <- readRDS("../figures/colors/CU_grouping_colors_3_G5.rds")
 
-######## GM5/6 INPUT #########
-K <-  6
-out_plot_admix <- "BANS_admix_overall_alpha0_GM6_letters.png"
+K <-  4
+out_plot_admix <- "BANS_admix_overall_alpha0_G4_letters_2.png"
 admix_plot_path <- "../figures/admix_plots/"
 
-out_group_admix <- "BANS_admix_grouping_GM6.tsv"
+out_group_admix <- "BANS_admix_grouping_G4_2.tsv"
 admix_group_path <- "../scratch/admix_output/"
 
-Q_tibble <- readRDS("../scratch/admix_output/BANS_GM6_forced_Q_tibble.RDS")
-cols <- readRDS("../figures/colors/CU_grouping_colors_2_GM6.rds")
+Q_tibble <- read.table("../scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e3.run1.admix.4.Q") %>%
+  setNames(paste0("ESU", 1:K))
+cols <- readRDS("../figures/colors/CU_grouping_colors_3_G4.rds")
 
 ######## RUNNING FUNCTION ########
-pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE)
+pca_df <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE)
 
 pops <- readr::read_csv("../scratch/pops.csv", show_col_types = FALSE)
-letter_key <- readr::read_csv("../scratch/cluster_letter_key_geo_lonlat.csv", show_col_types = FALSE)
+letter_key <- readRDS("../scratch/geo_informative_labels_centroids.RDS")
+
+group_label_order <- c("WA", "NT", 
+                       "AK", "YT", "SK", "MB_1", "MB_2", "MT", "ND", "WY_1", "WY_2", "AB", "BC_1", "BC_2",
+                       "ON", "QC_1", "QC_2", "NS_1", "NS_2",
+                       "NB", "PE", "NL")
 
 admix_out <- make_admix_barplot_and_assignments(
   K_target = K,
   cols = cols,
+  group_label_order = group_label_order,
+  threshold = 0.55,
   Q_tibble = Q_tibble,
   pca_df = pca_df,
   pops = pops,
-  letter_key = letter_key,
-  out_plot = "../figures/admix_plots/BANS_admix_overall_alpha0_G4_letters.png",
-  out_assignments = "../scratch/admix_output/admix_ESU_group_G4.tsv"
+  geo_key = letter_key,
+  out_plot = paste0(admix_plot_path,out_plot_admix),
+  out_assignments = paste0(admix_group_path,out_group_admix)
 )
 
 K_plot <- admix_out$K_plot
@@ -819,21 +870,26 @@ q_long <- admix_out$q_long
 
 # This plot is meaningless for the GM ones but easiest to just write it out anyway
 K_plot
-ggsave(path=admix_path, filename=out_plot_admix, plot=K_plot, width = 10, height = 2.2, units = "in", dpi = 300, bg = "white")
+ggsave(path=admix_plot_path, filename=out_plot_admix, plot=K_plot, width = 10, height = 2.2, units = "in", dpi = 300, bg = "white")
 
 write_tsv(admix_group, paste0(admix_group_path,out_group_admix))
+
+############
+pdf("../figures/admix_plots/BANS_admix_overall_alpha0_G4_letters.pdf", width = 10, height = 2.2)
+print(K_plot)
+dev.off()
 ```
 
 ## PCA plots
 ```{r}
 source("plot_pca_admix_solid.R")
 
-out_plot_pca1 <- "../figures/pca_plots/BANS_GM6_PCA_norel_ESUcoloring.png"
-out_plot_pca2 <- "../figures/pca_plots/BANS_GM6_PCA_norel_ESUcoloring.png"
-out_letters_cols <- "../figures/colors/CU_grouping_letter_colors_GM6.rds"
+out_plot_pca1 <- "../figures/pca_plots/BANS_G5_PCA_norel_ESUcoloring.png"
+out_plot_pca2 <- "../figures/pca_plots/BANS_G5_PCA_norel_ESUcoloring.png"
+out_letters_cols <- "../figures/colors/CU_grouping_letter_colors_G5.rds"
 
-admix_groups <- data.table::fread("../scratch/admix_output/BANS_admix_grouping_GM6.tsv")
-cols <- readRDS("../figures/colors/CU_grouping_colors_2_GM6.rds")
+admix_groups <- data.table::fread("../scratch/admix_output/BANS_admix_grouping_G5_2.tsv")
+cols <- readRDS("../figures/colors/CU_grouping_colors_2_G5.rds")
 
 plink_pca <- read.table("../scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE)
 pops <- readr::read_csv("../scratch/pops.csv", show_col_types = FALSE)
@@ -850,10 +906,16 @@ solid_out <- plot_pca_admix_solid(
 
 solid_out$pca_plot
 
-########## GRADIENT. #########
+########## GRADIENT #########
 source("plot_pca_location_gradient.R")
 
-letters <- read.csv("../scratch/cluster_letter_key_geo_lonlat.csv", stringsAsFactors = FALSE)
+letters <- readRDS("../scratch/geo_informative_labels_centroids.RDS")
+desired_order <- c(
+  "AK", "YT", "BC_1", "BC_2", "AB", "SK", "MT", "MB_1", "MB_2", "ND", "WY_1", "WY_2", 
+  "WA",
+  "ON", "NS_1", "NS_2", "QC_1", "QC_2", 
+  "NL", "PE", "NB"
+)
 
 grad_out <- plot_pca_location_gradient(
   plink_pca = plink_pca,
@@ -861,12 +923,16 @@ grad_out <- plot_pca_location_gradient(
   cols = cols,
   pops = pops,
   admix_groups = admix_groups,
-  letters = letters,
+  geo_key = letters,
+  desired_order=desired_order,
   out_plot = out_plot_pca2, 
-  out_letter_cols_rds = out_letters_cols
-)
+  out_letter_cols_rds = out_letters_cols)
 
 grad_out$pca_plot
+
+pdf("../figures/pca_plots/BANS_GM6_PCA_norel_ESUcoloring.pdf", width=6, height=4)
+print(grad_out$pca_plot)
+dev.off()
 ```
 
 # GENOSCAPE SHAPE FILES
@@ -876,16 +942,16 @@ library(mignette)
 
 lamproj <- "+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
 
-out_polygon <- "../outputs/BANS_CU_polygons_thresh45_GM6.shp"
-genoscape_brick <- raster::brick("../scratch/genoscape_output/BANS_overall_genoscape_brick_pcadmix_GM6.tif")
-names(genoscape_brick) <- paste0("ESU", 1:6)
+out_polygon <- "../outputs/BANS_CU_polygons_thresh45_G5.shp"
+genoscape_brick <- raster::brick("../scratch/genoscape_output/BANS_overall_genoscape_brick_pcadmix_G5.tif")
+names(genoscape_brick) <- paste0("ESU", 1:5)
 
 crs(genoscape_brick) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
 genoscape_brick_spat <- terra::rast(genoscape_brick)
 genoscape_brick_proj <- terra::project(genoscape_brick_spat, lamproj, method = "near")
 
 genoscape_polygons <- mignette::scape_to_shape(x = genoscape_brick_proj, 
-                                               prob_threshold = 0.45,
+                                               prob_threshold = 0.4,
                                                d = 100,
                                                f = 100,
                                                s = 3)

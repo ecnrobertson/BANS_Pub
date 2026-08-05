@@ -1,0 +1,20 @@
+PCAngsd v1.36.4
+Time: 27/01/2026 17:49:19
+Directory: /gpfs/alpine1/scratch/ericacnr@colostate.edu/BANS/02.5.neutral_pop_struc
+Options:
+	--plink BANS.filtered.unrel_pruned
+	--eig 2
+	--threads 4
+	--out BANS.filtered.unrel_pruned.alpha0.e2.run5
+	--admix
+	--admix_seed 31489
+
+Loaded 2844945 sites and 201 samples.
+Number of sites after MAF filtering (0.05): 2766880
+
+PCAngsd converged in 0 iterations using 2 eigenvectors.
+Saved covariance matrix as BANS.filtered.unrel_pruned.alpha0.e2.run5.cov
+Saved admixture proportions as BANS.filtered.unrel_pruned.alpha0.e2.run5.admix.3.Q
+Saved ancestral allele frequencies proportions as BANS.filtered.unrel_pruned.alpha0.e2.run5.admix.3.P
+
+Total elapsed time: 5m3s

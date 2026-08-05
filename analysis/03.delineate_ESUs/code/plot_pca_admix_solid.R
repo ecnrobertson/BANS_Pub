@@ -31,10 +31,15 @@ plot_pca_admix_solid <- function(plink_pca,
   }
   
   pops.groups <- dplyr::left_join(pops2, admix_groups2, by = "BGP_ID") %>%
-    dplyr::rename(ind = BGP_ID)
+    dplyr::rename(ind = BGP_ID) %>%
+    dplyr::mutate(
+      admix_group = tidyr::replace_na(admix_group, "No Assignment")
+    )
   
-  # join PCA + metadata
-  pca.cluster <- dplyr::left_join(pca_df, pops.groups, by = "ind")
+  pca.cluster <- dplyr::left_join(pca_df, pops.groups, by = "ind") %>%
+    dplyr::mutate(
+      admix_group = tidyr::replace_na(admix_group, "No Assignment")
+    )
   
   # plot
   p <- ggplot2::ggplot(

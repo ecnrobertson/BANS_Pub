@@ -3,8 +3,10 @@ build_genoscape_surfaces <- function(Q_matrix,
                                      breeding_na,
                                      cols,
                                      K,
+                                     krig_val = NULL,
                                      brick_names = NULL,
                                      out_tif = NULL,
+                                     alpha_threshold,
                                      lamproj = "+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs") {
   
   keep <- is.finite(long_lat_matrix[,1]) & is.finite(long_lat_matrix[,2])
@@ -20,7 +22,7 @@ build_genoscape_surfaces <- function(Q_matrix,
     resolution = c(1000,1000),
     col.palette = tess3r::CreatePalette(cols, K),
     method = "map.max",
-    interpol = tess3r::FieldsKrigModel(10)
+    interpol = tess3r::FieldsKrigModel(krig_val)
   )
   
   if (!is.null(brick_names)) {
@@ -34,10 +36,10 @@ build_genoscape_surfaces <- function(Q_matrix,
   genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
     TRB = genoscape_brick,
     cols = cols,
-    alpha_scale = 3,
-    abs_thresh = 0,
+    alpha_scale = 2.0,
+    abs_thresh = alpha_threshold,
     alpha_exp = 1.55,
-    alpha_chop_max = 230
+    alpha_chop_max = 230,
   )
   
   terra::crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs"
