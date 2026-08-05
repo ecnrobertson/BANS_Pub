@@ -4,7 +4,8 @@ plot_modG_predictions_all_schemes <- function(
     response_label = "Predicted Abundance Trend",
     predictor_data_dir = "../../04.predictors_of_decline/scratch/spatial_predictors",
     model_dir = "../../04.predictors_of_decline/outputs/GAM_outputs/function_out",
-    color_dir = "../colors",
+    cols,
+    CU_names_ref,
     out_dir = "../figures_output/modG_predictions",
     model_file = "modG.rds",
     covars = c("ppt_june_delta", "soil_june_delta", "tmax_june_delta", "tmin_june_delta", "ws_june_delta"),
@@ -22,13 +23,9 @@ plot_modG_predictions_all_schemes <- function(
   
   for (scheme in schemes) {
     
-    CU_names_ref <- read.csv(
-      file.path(color_dir, paste0("CU_", scheme, "_name_ref.csv"))
-    )
+    CU_names_ref <- CU_names_ref
     
-    cols <- readRDS(
-      file.path(color_dir, paste0("CU_grouping_colors_2_", scheme, "_fullnames.rds"))
-    )
+    cols <- cols
     
     data <- read.csv(
       file.path(

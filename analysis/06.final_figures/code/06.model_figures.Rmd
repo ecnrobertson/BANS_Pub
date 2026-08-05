@@ -1,0 +1,610 @@
+---
+title: "06.model_figures"
+output: html_document
+---
+# LIBRARIES
+```{r, message=FALSE, warning=FALSE}
+library(ncdf4)
+library(terra)
+library(raster)
+library(dplyr)
+library(purrr)
+library(data.table)
+library(ebirdst)
+library(fields)
+library(rnaturalearth)
+library(sf)
+library(ggplot2)
+library(ggrepel)
+library(mgcv)
+library(gratia)
+library(tidyterra)
+library(ggnewscale)
+library(patchwork)
+```
+# QUICK EVAL OF TREND DATA
+```{r}
+CU_names_ref <- data.frame(
+  AU = c("AU1", "AU2", "AU3"),
+  Name = c(
+    "Western",
+    "Eastern",
+    "Northern"
+  )
+)
+
+data <- read.csv("../../04.predictors_of_decline/scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold55.csv") %>% rename(AU = ESU)
+
+clean.data <- data %>% filter(!is.na(AU))
+
+clean.data.names <- left_join(clean.data, CU_names_ref, by="AU")
+
+Eastern <- clean.data.names %>% filter(Name=="Eastern")
+Western <- clean.data.names %>% filter(Name=="Western")
+Northern <- clean.data.names %>% filter(Name=="Northern")
+
+summary(Eastern)
+summary(Northern)
+```
+# MODEL FIGURES
+(Note, functions following were based on code I wrote and used ChatGPT to make into full functions, all interpretations are my own)
+## partial effect plots
+```{r}
+CU_names_ref <- data.frame(
+  AU = c("AU1", "AU2", "AU3"),
+  Name = c(
+    "Western",
+    "Eastern",
+    "Northern"
+  )
+)
+
+cols <- readRDS("../colors/AU_grouping_colors_K3.rds")
+K <- length(cols)
+
+data <- read.csv("../../04.predictors_of_decline/scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold55.csv") %>% rename(AU = ESU)
+
+clean.data <- data %>% filter(!is.na(AU))
+
+clean.data.names <- left_join(clean.data, CU_names_ref, by="AU")
+
+clim_vars <- c("ppt", "tmax", "soil", "tmin", "ws")
+scheme <- "AU_K3"
+```
+
+```{r}
+for (var in clim_vars){
+  modGS <- readRDS(paste0("../../04.predictors_of_decline/outputs/GAM_outputs_55/function_out/",scheme,"/modGS_",var,".rds"))
+  sm_dat <- smooth_estimates(modGS,
+                           smooth = paste0("s(",var,"_june_delta,ESU)")
+                           )
+  CU_names_ref_ESU <- CU_names_ref %>% rename(ESU=AU)
+  sm_dat.names <- left_join(sm_dat, CU_names_ref_ESU, by="ESU") %>% rename(AU=ESU)
+  
+  p <- ggplot(sm_dat.names, aes(x = .data[[paste0(var, "_june_delta")]],
+                   y = .estimate,
+                   colour = Name)) +
+  geom_line() +
+  facet_wrap(~ Name, nrow=1) +
+  scale_colour_manual(values = cols) +
+  theme_classic()+
+  theme(
+  strip.text = element_blank(),
+  strip.background = element_blank(),
+  legend.position = "none",
+  axis.title.y = element_text(size = 7),
+  axis.text.x = element_text(size=8, 
+                             angle =90,
+                             vjust = 0.5,
+                             hjust = 1))+
+  geom_hline(yintercept = 0, linetype = "dashed")+
+  geom_vline(xintercept = 0, linetype = "dashed")+
+  xlab(paste0("Change in ",var))+
+  ylab(expression("Partial effect on " ~ Delta ~ "Abundance"))
+  
+g1
+ggsave(
+    filename = paste0(
+      "../figures_output/partial_effects_55/",scheme,"/BANS_",
+      var, "_GAM_", scheme, "_partialeffect.png"
+    ),
+    plot = p,
+    height = 2,
+    width = 6
+    )
+}
+
+```
+
+```{r}
+source("plot_partial_effects_by_scheme_adaptive.R")
+CU_names_ref <- data.frame(
+  AU = c("AU1", "AU2", "AU3"),
+  Name = c(
+    "Western",
+    "Eastern",
+    "Northern"
+  )
+)
+# run for both modGS and modS
+plot_partial_effects_by_scheme(
+  data=data,
+  schemes = "AU_K3",
+  model = "modS",
+  cols = cols,
+  CU_names_ref = CU_names_ref,
+  clim_vars = c("ppt", "tmax", "soil", "tmin", "ws")
+)
+```
+
+## prediction plots
+### null
+```{r}
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") + s(soil_june_delta, k = 15, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 15, bs="tp") + s(ws_june_delta, k = 15, bs="tp"), data=clean.data, method="REML")
+
+covars <- c(
+  "ppt_june_delta",
+  "soil_june_delta",
+  "tmax_june_delta",
+  "tmin_june_delta",
+  "ws_june_delta"
+)
+
+null_plots <- list()
+null_predictions <- list()
+
+for (focal_var in covars) {
+
+  other_covars <- setdiff(covars, focal_var)
+
+  # Prediction grid
+  base_grid <- data.frame(
+    focal_seq = seq(
+      min(clean.data[[focal_var]], na.rm = TRUE),
+      max(clean.data[[focal_var]], na.rm = TRUE),
+      length.out = 100
+    )
+  )
+
+  names(base_grid)[1] <- focal_var
+
+  for (v in other_covars) {
+    base_grid[[v]] <- median(clean.data[[v]], na.rm = TRUE)
+  }
+
+  # Predict
+  pred_null <- predict(
+    gam_null,
+    newdata = base_grid,
+    se.fit = TRUE,
+    type = "link"
+  )
+
+  pred_grid_null <- base_grid %>%
+    mutate(
+      fit = pred_null$fit,
+      se = pred_null$se.fit
+    )
+
+  null_predictions[[focal_var]] <- pred_grid_null
+
+  # Plot
+  p <- ggplot(pred_grid_null,
+              aes(x = .data[[focal_var]], y = fit)) +
+    geom_ribbon(
+      aes(
+        ymin = fit - 2 * se,
+        ymax = fit + 2 * se
+      ),
+      alpha = 0.15,
+      fill = "grey50"
+    ) +
+    geom_line(
+      linewidth = 1,
+      colour = "black"
+    ) +
+    theme_classic() +
+    labs(
+      x = focal_var,
+      y = "Predicted Abundance Trend"
+    )
+
+  null_plots[[focal_var]] <- p
+}
+null_plots$ppt_june_delta
+```
+### modG
+```{r}
+source("plot_modG_predictions_all_schemes.R")
+pred_out <- plot_modG_predictions_all_schemes(
+  schemes = "G5",
+  focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
+  cols = cols,
+  CU_names_ref = CU_names_ref,
+  plot_dims = list(width = 7, height = 4),
+  x_labels = c(
+    tmax_june_delta = "Change in Max Temperature",
+    ppt_june_delta = "Change in Precipitation",
+    soil_june_delta = "Change in Soil Moisture",
+    ws_june_delta = "Change in Wind Speed",
+    tmin_june_delta = "Change in Min Temperature"
+  ),
+  include_pop_line = TRUE
+)
+
+pred_out$G5$results_by_var$tmax_june_delta$plot
+```
+
+
+```{r}
+schemes <- names(pred_out)
+schemes <- "G5"
+for (scheme in schemes) {
+
+  # grab all plot objects for this scheme
+  plot_list <- lapply(pred_out[[scheme]]$results_by_var, function(x) x$plot)
+
+  # combine into one figure and collect a single legend
+  p_combined <- wrap_plots(plot_list, ncol = 5, guides = "collect") &
+    theme(legend.position = "bottom")
+
+  # save into the corresponding scheme folder
+  ggsave(
+    filename = file.path(
+      "../figures_output/modG_predictions",
+      scheme,
+      paste0("modG_allvars_predictions_", scheme, ".png")
+    ),
+    plot = p_combined,
+    width = 25,
+    height = 8
+  )
+}
+
+
+```
+### modGS
+```{r}
+source("plot_modS_modGS_predictions_all_scheme_adaptive.R")
+
+pred_out_modGS <- plot_modS_modGS_predictions_all_schemes_adaptive(
+  data=data,
+  schemes = "AU_K3",
+  model = "modGS",
+  cols = cols,
+  CU_names_ref = CU_names_ref,
+  focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
+  plot_dims = list(width = 7, height = 4),
+  x_labels = c(
+    tmax_june_delta = "Change in Max Temperature",
+    ppt_june_delta = "Change in Precipitation",
+    soil_june_delta = "Change in Soil Moisture",
+    ws_june_delta = "Change in Wind Speed",
+    tmin_june_delta = "Change in Min Temperature"
+  )
+)
+
+schemes <- names(pred_out_modGS)
+clim_vars <- c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "tmin_june_delta")
+
+for (scheme in schemes) {
+
+  plot_list <- lapply(clim_vars, function(v) {
+    pred_out_modGS[[scheme]]$results_by_var[[v]]$plot
+  })
+
+  p_combined <- patchwork::wrap_plots(plot_list, ncol = 4, guides = "collect") &
+    ggplot2::theme(legend.position = "bottom")
+
+  ggplot2::ggsave(
+    filename = file.path(
+      "../figures_output/modGS_predictions",
+      scheme,
+      paste0("modGS_allvars_predictions_", scheme, ".png")
+    ),
+    plot = p_combined,
+    width = 25,
+    height = 8
+  )
+}
+
+scheme="AU_K3"
+  
+ plot_list <- lapply(clim_vars, function(v) {
+    pred_out_modGS[[scheme]]$results_by_var[[v]]$plot
+  })
+
+  p_combined <- patchwork::wrap_plots(plot_list, ncol = 4, guides = "collect") &
+    ggplot2::theme(legend.position = "bottom")
+  
+pdf(
+    file = file.path(
+      "../figures_output/modGS_predictions",
+      scheme,
+      paste0("modGS_allvars_predictions_", scheme, ".pdf")
+    ),
+    width = 25,
+    height = 8
+  )
+print(p_combined)
+dev.off()
+```
+
+```{r}
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") + s(soil_june_delta, k = 15, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 15, bs="tp") + s(ws_june_delta, k = 15, bs="tp"), data=clean.data, method="REML")
+
+source("plot_modS_modGS_predictions_all_schemes_adaptive_with_null.R")
+
+modGS_with_null <- plot_modS_modGS_predictions_all_schemes_adaptive_with_null(
+  data = clean.data.names,
+  schemes = "AU_K3",
+  cols = cols,
+  CU_names_ref = CU_names_ref,
+  null_model = gam_null,
+  model = "modGS",
+  focal_vars = c(
+    "ppt_june_delta",
+    "soil_june_delta",
+    "tmax_june_delta",
+    "tmin_june_delta",
+    "ws_june_delta"
+  )
+)
+
+scheme <- "AU_K3"
+focal_vars = c("tmax_june_delta",
+               "ppt_june_delta",
+               "soil_june_delta",
+               "tmin_june_delta"
+               )
+plot_list <- lapply(focal_vars, function(v) {
+  modGS_with_null$AU_K3$results_by_var[[v]]$plot
+})
+
+p_combined <- patchwork::wrap_plots(
+  plot_list,
+  ncol = 4,
+  guides = "collect"
+) &
+  ggplot2::theme(legend.position = "bottom")
+
+p_combined
+  
+pdf(
+    file = file.path(
+      "../figures_output/modGS_predictions",
+      scheme,
+      paste0("modGS_allvars_predictions_", scheme, "_with_null_55.pdf")
+    ),
+    width = 25,
+    height = 8
+  )
+print(p_combined)
+dev.off()
+```
+
+### modS
+```{r}
+source("plot_modS_modGS_predictions_all_scheme_adaptive.R")
+
+pred_out_modGS <- plot_modS_modGS_predictions_all_schemes_adaptive(
+  data=data,
+  schemes = "AU_K3",
+  model = "modS",
+  cols = cols,
+  CU_names_ref = CU_names_ref,
+  focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
+  plot_dims = list(width = 7, height = 4),
+  x_labels = c(
+    tmax_june_delta = "Change in Max Temperature",
+    ppt_june_delta = "Change in Precipitation",
+    soil_june_delta = "Change in Soil Moisture",
+    ws_june_delta = "Change in Wind Speed",
+    tmin_june_delta = "Change in Min Temperature"
+  )
+)
+
+schemes <- names(pred_out_modS)
+clim_vars <- c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "tmin_june_delta")
+
+for (scheme in schemes) {
+
+  plot_list <- lapply(clim_vars, function(v) {
+    pred_out_modGS[[scheme]]$results_by_var[[v]]$plot
+  })
+
+  p_combined <- patchwork::wrap_plots(plot_list, ncol = 4, guides = "collect") &
+    ggplot2::theme(legend.position = "bottom")
+
+  ggplot2::ggsave(
+    filename = file.path(
+      "../figures_output/modS_predictions",
+      scheme,
+      paste0("modS_allvars_predictions_", scheme, ".png")
+    ),
+    plot = p_combined,
+    width = 25,
+    height = 8
+  )
+}
+
+scheme="AU_K3"
+  
+ plot_list <- lapply(clim_vars, function(v) {
+    pred_out_modGS[[scheme]]$results_by_var[[v]]$plot
+  })
+
+  p_combined <- patchwork::wrap_plots(plot_list, ncol = 4, guides = "collect") &
+    ggplot2::theme(legend.position = "bottom")
+  
+pdf(
+    file = file.path(
+      "../figures_output/modS_predictions",
+      scheme,
+      paste0("modS_allvars_predictions_", scheme, ".pdf")
+    ),
+    width = 25,
+    height = 8
+  )
+print(p_combined)
+dev.off()
+```
+#### per env variables
+```{r}
+data <- read.csv("../../04.predictors_of_decline/scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_G5_threshold45.csv")
+
+#only data where I had a good ESU assignment
+clean.data <- data %>% filter(!is.na(ESU))
+nrow(clean.data)
+
+clean.data$ESU <- factor(clean.data$ESU)
+
+table(clean.data$ESU)
+clean.data$ESU_label <- factor(
+  clean.data$ESU,
+  levels = ESU_labels$ESU,
+  labels = ESU_labels$Name
+  )
+```
+##### TMAX
+```{r}
+modGS.tmax <- readRDS("../../04.predictors_of_decline/outputs/GAM_outputs/function_out/G5/modGS_tmax.rds")
+```
+```{r}
+pred_grid <- expand.grid(
+  tmax_june_delta = seq(
+    min(clean.data$tmax_june_delta, na.rm = TRUE),
+    max(clean.data$tmax_june_delta, na.rm = TRUE),
+    length.out = 100
+  ),
+  ESU = levels(clean.data$ESU)
+)
+
+cols <- readRDS("../../03.delineate_ESUs/figures/colors/CU_grouping_colors_3_G5.rds")
+
+pred_grid$ppt_june_delta  <- median(clean.data$ppt_june_delta,  na.rm = TRUE)
+pred_grid$soil_june_delta <- median(clean.data$soil_june_delta, na.rm = TRUE)
+pred_grid$tmin_june_delta <- median(clean.data$tmin_june_delta, na.rm = TRUE)
+pred_grid$ws_june_delta <- median(clean.data$ws_june_delta, na.rm = TRUE)
+
+p_full <- predict(modGS.tmax, newdata = pred_grid, se.fit = TRUE)
+pred_grid$fit_full <- p_full$fit
+pred_grid$se_full  <- p_full$se.fit
+
+ggplot(pred_grid, aes(x = tmax_june_delta, y = fit_full, color = ESU, group = ESU)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = fit_full - 2*se_full, ymax = fit_full + 2*se_full, fill = ESU),
+              alpha = 0.15, colour = NA) +
+  theme_classic() +
+  guides(fill = "none") +
+  ylab("Predicted Abd Trend")+
+  xlab(expression("Change in" ~T[max]))+
+  facet_wrap(~ESU, scales = "free", ncol = 5) +
+  scale_fill_manual(values = cols,
+                    breaks = names(cols),
+                    name = "ESU")+
+  theme(
+  strip.text = element_blank(),
+  axis.text.x = element_text(size=8, 
+                             angle =90,
+                             vjust = 0.5,
+                             hjust = 1),
+  legend.position = "none")+
+  scale_color_manual(values = cols)
+
+  
+ggsave("../figures_output/BANS_tmaxGAM_allG5_predictedtrend.png", height=2, width=6)
+```
+##### PRECIP
+```{r}
+modGS.ppt <- readRDS("../../04.predictors_of_decline/outputs/GAM_outputs/function_out/G5/modGS_ppt.rds")
+```
+
+```{r}
+pred_grid <- expand.grid(
+  ppt_june_delta = seq(
+    min(clean.data$ppt_june_delta, na.rm = TRUE),
+    max(clean.data$ppt_june_delta, na.rm = TRUE),
+    length.out = 100
+  ),
+  ESU = levels(clean.data$ESU)
+)
+
+cols <- readRDS("../../03.delineate_ESUs/figures/colors/CU_grouping_colors_3_G5.rds")
+
+pred_grid$tmax_june_delta  <- median(clean.data$tmax_june_delta,  na.rm = TRUE)
+pred_grid$soil_june_delta <- median(clean.data$soil_june_delta, na.rm = TRUE)
+pred_grid$tmin_june_delta <- median(clean.data$tmin_june_delta, na.rm = TRUE)
+pred_grid$ws_june_delta <- median(clean.data$ws_june_delta, na.rm = TRUE)
+
+p_full <- predict(modGS.ppt, newdata = pred_grid, se.fit = TRUE)
+pred_grid$fit_full <- p_full$fit
+pred_grid$se_full  <- p_full$se.fit
+
+ggplot(pred_grid, aes(x = ppt_june_delta, y = fit_full, color = ESU, group = ESU)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = fit_full - 2*se_full, ymax = fit_full + 2*se_full, fill = ESU),
+              alpha = 0.15, colour = NA) +
+  theme_classic() +
+  guides(fill = "none") +
+  ylab("Predicted Abd Trend")+
+  xlab(expression("Change in" ~ppt))+
+  facet_wrap(~ESU, scales = "free", ncol = 5) +
+  scale_fill_manual(values = cols,
+                    breaks = names(cols),
+                    name = "ESU")+
+  theme(
+  strip.text = element_blank(),
+  axis.text.x = element_text(size=8, 
+                             angle =90,
+                             vjust = 0.5,
+                             hjust = 1),
+  legend.position = "none")+
+  scale_color_manual(values = cols)
+
+  
+ggsave("../figures_output/BANS_pptGAM_allG5_predictedtrend.png", height=2, width=6)
+```
+
+### modS
+```{r}
+source("plot_modS_modGS_predictions_all_schemes.R")
+
+pred_out_modS <- plot_modS_modGS_predictions_all_schemes(
+  schemes = "G5",
+  model = "modS",
+  focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
+  plot_dims = list(width = 7, height = 4),
+  x_labels = c(
+    tmax_june_delta = "Change in Max Temperature",
+    ppt_june_delta = "Change in Precipitation",
+    soil_june_delta = "Change in Soil Moisture",
+    ws_june_delta = "Change in Wind Speed",
+    tmin_june_delta = "Change in Min Temperature"
+  )
+)
+
+schemes <- names(pred_out_modS)
+clim_vars <- c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta")
+
+for (scheme in schemes) {
+  
+  plot_list <- lapply(clim_vars, function(v) {
+    pred_out_modS[[scheme]]$results_by_var[[v]]$plot
+  })
+  
+  p_combined <- patchwork::wrap_plots(plot_list, ncol = 5, guides = "collect") &
+    ggplot2::theme(legend.position = "bottom")
+  
+  ggplot2::ggsave(
+    filename = file.path(
+      "../figures_output/modS_predictions",
+      scheme,
+      paste0("modS_allvars_predictions_", scheme, ".png")
+    ),
+    plot = p_combined,
+    width = 25,
+    height = 8
+  )
+}
+```

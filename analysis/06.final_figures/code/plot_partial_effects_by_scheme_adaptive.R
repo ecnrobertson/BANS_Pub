@@ -21,9 +21,9 @@ plot_partial_effects_by_scheme <- function(
     data <- data
     
     clean.data <- data %>%
-      dplyr::filter(!is.na(ESU))
+      dplyr::filter(!is.na(AU))
     
-    clean.data.names <- dplyr::left_join(clean.data, CU_names_ref, by = "ESU")
+    clean.data.names <- dplyr::left_join(clean.data, CU_names_ref, by = "AU")
     
     scheme_out_dir <- file.path(out_dir, scheme)
     dir.create(scheme_out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -37,13 +37,11 @@ plot_partial_effects_by_scheme <- function(
       )
       
       mod_obj <- readRDS(model_file)
-      
-      sm_dat <- gratia::smooth_estimates(
-        mod_obj,
-        smooth = paste0("s(", var, "_june_delta,ESU)")
+      sm_dat <- smooth_estimates(mod_obj,
+                                 smooth = paste0("s(",var,"_june_delta,ESU)")
       )
-      
-      sm_dat.names <- dplyr::left_join(sm_dat, CU_names_ref, by = "ESU")
+      CU_names_ref_ESU <- CU_names_ref %>% rename(ESU=AU)
+      sm_dat.names <- left_join(sm_dat, CU_names_ref_ESU, by="ESU") %>% rename(AU=ESU)
       
       p <- ggplot2::ggplot(
         sm_dat.names,

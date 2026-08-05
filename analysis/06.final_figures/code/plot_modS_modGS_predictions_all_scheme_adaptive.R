@@ -1,4 +1,4 @@
-plot_modS_modGS_predictions_all_schemes <- function(
+plot_modS_modGS_predictions_all_schemes_adaptive <- function(
     data,
     schemes,
     cols,
@@ -33,8 +33,8 @@ plot_modS_modGS_predictions_all_schemes <- function(
     data <- data
     
     clean.data <- data %>%
-      dplyr::filter(!is.na(ESU)) %>%
-      dplyr::mutate(ESU = factor(ESU))
+      dplyr::filter(!is.na(AU)) %>%
+      dplyr::mutate(ESU = factor(AU))
     
     scheme_out_dir <- file.path(out_dir, paste0(model, "_predictions"), scheme)
     dir.create(scheme_out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -78,7 +78,7 @@ plot_modS_modGS_predictions_all_schemes <- function(
       pred_grid$se_full  <- p_full$se.fit
       
       pred_grid_named <- pred_grid %>%
-        dplyr::left_join(CU_names_ref, by = "ESU")
+        dplyr::left_join(CU_names_ref, by = c("ESU" = "AU"))
       
       x_lab <- if (is.null(x_labels)) {
         focal_var
@@ -93,8 +93,8 @@ plot_modS_modGS_predictions_all_schemes <- function(
         ggplot2::aes(
           x = .data[[focal_var]],
           y = fit_full,
-          color = Name,
-          group = Name
+          color = ESU,
+          group = ESU
         )
       ) +
         ggplot2::geom_line() +
@@ -102,7 +102,7 @@ plot_modS_modGS_predictions_all_schemes <- function(
           ggplot2::aes(
             ymin = fit_full - 2 * se_full,
             ymax = fit_full + 2 * se_full,
-            fill = Name
+            fill = ESU
           ),
           alpha = 0.15,
           colour = NA

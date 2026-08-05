@@ -28,19 +28,11 @@ library(patchwork)
 This is just a script from making some specific figures for talks and or final manuscript stuff. I'll update it with specific notes for the figure numbers and such based on where things end up in the manuscript...
 
 # ESU labeling and color updates
-Options for Names:
-    "Interior West",
-    "Mackenzie Basin",
-    "Pacific Coastal",
-    "Newfoundland",
-    "Alaska–Northwest",
-    "East Coastal"
-        "Western United States",
-"Alaksa-East Coastal",
+
 ```{r}
 genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_G5.shp")
 
-cols <- readRDS("../../03.delineate_ESUs/figures/colors/CU_grouping_colors_2_G5.rds")
+cols <- readRDS("../../03.delineate_ESUs/figures/colors/CU_grouping_colors_3_G5.rds")
 
 genoscape_reference <- ggplot() +
   ggspatial::layer_spatial(
@@ -65,24 +57,24 @@ genoscape_reference
 CU_name_ref <- tibble(
   ESU = c("ESU1", "ESU2", "ESU3", "ESU4", "ESU5"),
   Name = c(
-    "Interior West",
-    "Mackenzie Basin",
     "Pacific Coastal",
+    "Mackenzie Basin",
     "Newfoundland",
-    "Alaska-East Coastal")
+    "East Coastal",
+    "Alaska-Interior West")
 )
 
 cols_fullnames <- cols
 names(cols_fullnames) <- CU_name_ref$Name
 
-saveRDS(cols_fullnames, "../colors/CU_grouping_colors_2_G5_fullnames.rds")
+saveRDS(cols_fullnames, "../colors/CU_grouping_colors_3_G5_fullnames.rds")
 
-CU_name_ref %>% write_csv("../colors/CU_G5_name_ref.csv")
+CU_name_ref %>% write_csv("../colors/CU_G5_name_ref_2.csv")
 ```
 
 # TREND RASTER FIGURES
 ```{r}
-trends_raster <- rast("../scratch/spatial_predictors/eBird_trends_BANS_proj4326.tif")
+trends_raster <- rast("../../04.predictors_of_decline/scratch/spatial_predictors/eBird_trends_BANS_proj4326.tif")
 ```
 
 ```{r, message=FALSE, warning=FALSE, results='hide'}
@@ -108,7 +100,6 @@ breeding_na <- st_intersection(breeding.sf, na_union)
 lamproj <- "+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
 
 bb <- st_bbox(breeding_na) %>% st_transform(lamproj)
-saveRDS(bb,"../figures/bounding_box_breeedingNA.rds")
 
 trends_projected <- terra::project(trends_raster, lamproj, method = "near")
 
@@ -151,10 +142,8 @@ ggsave(plot=trends_plot,"../figures_output/BANS_trends_plot_ggplot.png")
 
 ## genoscape polygons for overlap
 ```{r}
-scheme <- "GM6"
-
-genoscape_polygons <- st_read(paste0("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_",scheme,".shp"))
-CU_names_ref <- read.csv(paste0("../colors/CU_",scheme,"_name_ref.csv"))
+genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_G5.shp")
+CU_names_ref <- read.csv("../colors/CU_G5_name_ref_2.csv")
 
 genoscape_polygons$Cluster <- factor(
   genoscape_polygons$Cluster,
@@ -162,56 +151,132 @@ genoscape_polygons$Cluster <- factor(
   labels = CU_names_ref$Name
 )
 
-cols <- readRDS(paste0("../colors/CU_grouping_colors_2_",scheme,"_fullnames.rds"))
+cols <- readRDS("../colors/CU_grouping_colors_3_G5_fullnames.rds")
 
-out_overlap_plot <- paste0("../figures_output/trends/BANS_trends_plot_ESU_",scheme,"_overlay_ggplot_colored.png")
+out_overlap_plot <- paste0("../figures_output/trends/BANS_trends_plot_ESU_G5_overlay_ggplot_colored_2.png")
 ```
 
 ```{r}
+map_layers_rasterized <- ggrastr::rasterise(
+  {
+    list(
+      geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225, alpha = 0.6),
+      geom_sf(data = countries, fill = NA, linewidth = 0.25),
+      geom_sf(data = coastlines, fill = NA, linewidth = 0.1225),
+      geom_sf(data = states, fill = NA, linewidth = 0.1225),
+      geom_sf(data = ocean, fill = "#bddbe6"),
+      geom_sf(data = lakes, fill = "#bddbe6"),
+      ggspatial::layer_spatial(
+        genoscape_polygons,
+        aes(fill = factor(Cluster)),
+        alpha = 0.25
+      )
+    )
+  },
+  dpi = 300
+)
+
 trends_plot_overlaid <- ggplot() +
   tidyterra::geom_spatraster(data = trends_projected, na.rm = TRUE) +
-  scale_fill_gradient2(low = "#CA4741", mid = "white", high = "#3784BB", 
-                       midpoint = 0,na.value =NA, name = "Trend")+
-  geom_sf(data = breeding_na, fill = "NA", linewidth = 0.1225 , alpha = 0.6) +
+  scale_fill_gradient2(
+    low = "#CA4741",
+    mid = "white",
+    high = "#3784BB",
+    midpoint = 0,
+    na.value = NA,
+    name = "Trend"
+  ) +
+  ggnewscale::new_scale_fill() +
+  map_layers_rasterized +
+  scale_fill_manual(
+    values = cols,
+    breaks = names(cols),
+    name = "ESU"
+  ) +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1)
+  ) +
+  coord_sf(
+    crs = st_crs(lamproj),
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE
+  )
+trends_plot_overlaid
+ggsave(plot=trends_plot_overlaid, out_overlap_plot)
+
+pdf("../figures_output/BANS_trends_plot_ESU_G5_overlay_ggplot_colored.pdf", height=4, width=8)
+print(trends_plot_overlaid)
+dev.off()
+```
+
+```{r}
+map_only <- ggplot() +
+  geom_sf(data = ocean, fill = "#bddbe6", color = NA) +
+  geom_sf(data = countries, fill = "lightgray", color = NA) +
+  geom_sf(data = states, fill = "lightgray", color = NA) +
+  geom_sf(data = lakes, fill = "#bddbe6", color = NA) +
+
+  tidyterra::geom_spatraster(data = trends_projected, na.rm = TRUE) +
+  scale_fill_gradient2(
+    low = "#CA4741",
+    mid = "white",
+    high = "#3784BB",
+    midpoint = 0,
+    na.value = NA,
+    name = "Trend"
+  ) +
+
+  geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225, alpha = 0.6) +
   geom_sf(data = countries, fill = NA, linewidth = 0.25) +
   geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
   geom_sf(data = states, fill = NA, linewidth = 0.1225) +
-  geom_sf(data = ocean, fill = "#bddbe6") +
-  geom_sf(data = lakes, fill = "#bddbe6") +
-  new_scale_fill()+
+
+  ggnewscale::new_scale_fill() +
   ggspatial::layer_spatial(
-  genoscape_polygons,
-  aes(fill  = factor(Cluster)),
-  alpha=.25
-) +
-scale_fill_manual(
-  values = cols,
-  breaks = names(cols),
-  name = "ESU" 
-)+
-  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1))+
+    genoscape_polygons,
+    aes(fill = factor(Cluster)),
+    alpha = 0.25
+  ) +
+  scale_fill_manual(
+    values = cols,
+    breaks = names(cols),
+    name = "ESU",
+    na.value = NA
+  ) +
   coord_sf(
-  crs = st_crs(lamproj),
-  xlim = c(bb["xmin"], bb["xmax"]),
-  ylim = c(bb["ymin"], bb["ymax"]),
-  expand = FALSE)
-trends_plot_overlaid
-ggsave(plot=trends_plot_overlaid, out_overlap_plot)
+    crs = st_crs(lamproj),
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.margin = margin(0, 0, 0, 0),
+    panel.background = element_rect(fill = "gray90", color = NA),
+    plot.background = element_rect(fill = "gray90", color = NA)
+  )
+
+ggsave(
+  "../figures_output/trends_map_only.png",
+  map_only,
+  width = 10,
+  height = 6,
+  dpi = 600,
+  bg = NA
+)
 ```
 
 # MODEL FIGURES
 (Note, functions following were based on code I wrote and used ChatGPT to make into full functions, all interpretations are my own)
 ## partial effect plots
 ```{r}
-schemes <- c("G4", "G5", "GM5", "GM6")
-
-for (scheme in schemes){
-
-CU_names_ref <- read.csv(paste0("../colors/CU_",scheme,"_name_ref.csv"))
-cols <- readRDS(paste0("../colors/CU_grouping_colors_2_",scheme,"_fullnames.rds"))
+CU_names_ref <- read.csv("../colors/CU_G5_name_ref_2.csv")
+cols <- readRDS("../colors/CU_grouping_colors_3_G5_fullnames.rds")
 K <- length(cols)
 
-data <- read.csv(paste0("../../04.predictors_of_decline/scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_",scheme,"_threshold45.csv"))
+data <- read.csv("../../04.predictors_of_decline/scratch/spatial_predictors/spatial_predictor_data_xy_from_ESU_G5_threshold45.csv")
 
 clean.data <- data %>% filter(!is.na(ESU))
 
@@ -257,16 +322,21 @@ ggsave(
     width = 6
     )
 }
-}
+
 ```
 
 ```{r}
 source("plot_partial_effects_by_scheme.R")
 
+CU_names_ref <- read.csv("../colors/CU_G5_name_ref_2.csv")
+cols <- readRDS("../colors/CU_grouping_colors_3_G5_fullnames.rds")
+
 # run for both modGS and modS
 plot_partial_effects_by_scheme(
-  schemes = c("G4", "G5", "GM5", "GM6"),
-  model = "modS",
+  schemes = "G5",
+  model = "modGS",
+  cols = cols,
+  CU_names_ref = CU_names_ref,
   clim_vars = c("ppt", "tmax", "soil", "tmin", "ws")
 )
 ```
@@ -276,8 +346,10 @@ plot_partial_effects_by_scheme(
 ```{r}
 source("plot_modG_predictions_all_schemes.R")
 pred_out <- plot_modG_predictions_all_schemes(
-  schemes = c("G4", "G5", "GM5", "GM6"),
+  schemes = "G5",
   focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
+  cols = cols,
+  CU_names_ref = CU_names_ref,
   plot_dims = list(width = 7, height = 4),
   x_labels = c(
     tmax_june_delta = "Change in Max Temperature",
@@ -289,21 +361,22 @@ pred_out <- plot_modG_predictions_all_schemes(
   include_pop_line = TRUE
 )
 
-pred_out$G4$results_by_var$tmax_june_delta$plot
-pred_out$GM6$results_by_var$ppt_june_delta$plot
+pred_out$G5$results_by_var$tmax_june_delta$plot
 ```
+
+
 ```{r}
 schemes <- names(pred_out)
-
+schemes <- "G5"
 for (scheme in schemes) {
-  
+
   # grab all plot objects for this scheme
   plot_list <- lapply(pred_out[[scheme]]$results_by_var, function(x) x$plot)
-  
+
   # combine into one figure and collect a single legend
   p_combined <- wrap_plots(plot_list, ncol = 5, guides = "collect") &
     theme(legend.position = "bottom")
-  
+
   # save into the corresponding scheme folder
   ggsave(
     filename = file.path(
@@ -316,6 +389,8 @@ for (scheme in schemes) {
     height = 8
   )
 }
+
+
 ```
 
 ### modGS
@@ -323,8 +398,10 @@ for (scheme in schemes) {
 source("plot_modS_modGS_predictions_all_schemes.R")
 
 pred_out_modGS <- plot_modS_modGS_predictions_all_schemes(
-  schemes = c("G4", "G5", "GM5", "GM6"),
+  schemes = "G5",
   model = "modGS",
+  cols = cols,
+  CU_names_ref = CU_names_ref,
   focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
   plot_dims = list(width = 7, height = 4),
   x_labels = c(
@@ -340,14 +417,14 @@ schemes <- names(pred_out_modGS)
 clim_vars <- c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta")
 
 for (scheme in schemes) {
-  
+
   plot_list <- lapply(clim_vars, function(v) {
     pred_out_modGS[[scheme]]$results_by_var[[v]]$plot
   })
-  
+
   p_combined <- patchwork::wrap_plots(plot_list, ncol = 5, guides = "collect") &
     ggplot2::theme(legend.position = "bottom")
-  
+
   ggplot2::ggsave(
     filename = file.path(
       "../figures_output/modGS_predictions",
@@ -359,6 +436,213 @@ for (scheme in schemes) {
     height = 8
   )
 }
+
+scheme="G5"
+  
+ plot_list <- lapply(clim_vars, function(v) {
+    pred_out_modGS[[scheme]]$results_by_var[[v]]$plot
+  })
+
+  p_combined <- patchwork::wrap_plots(plot_list, ncol = 5, guides = "collect") &
+    ggplot2::theme(legend.position = "bottom")
+  
+pdf(
+    file = file.path(
+      "../figures_output/modGS_predictions",
+      scheme,
+      paste0("modGS_allvars_predictions_", scheme, ".pdf")
+    ),
+    width = 25,
+    height = 8
+  )
+print(p_combined)
+dev.off()
+```
+#### per env variables
+```{r}
+data <- read.csv("../../04.predictors_of_decline/scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold55.csv")
+
+#only data where I had a good ESU assignment
+clean.data <- data %>% filter(!is.na(ESU))
+nrow(clean.data)
+
+clean.data$ESU <- factor(clean.data$ESU)
+
+CU_names_ref <- data.frame(
+  ESU = c("AU1", "AU2", "AU3"),
+  Name = c(
+    "Western",
+    "Eastern",
+    "Northern"
+  )
+)
+
+table(clean.data$ESU)
+clean.data$ESU_label <- factor(
+  clean.data$ESU,
+  levels = CU_names_ref$ESU,
+  labels = CU_names_ref$Name
+  )
+```
+##### TMIN
+```{r}
+modGS.tmin <- readRDS("../../04.predictors_of_decline/outputs/GAM_outputs/function_out/AU_K3/modGS_tmin.rds")
+```
+
+```{r}
+pred_grid <- expand.grid(
+  tmin_june_delta = seq(
+    min(clean.data$tmin_june_delta, na.rm = TRUE),
+    max(clean.data$tmin_june_delta, na.rm = TRUE),
+    length.out = 100
+  ),
+  ESU = levels(clean.data$ESU)
+)
+
+cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K3.rds")
+#names(cols) <- CU_names_ref$Name
+
+pred_grid$ppt_june_delta  <- median(clean.data$ppt_june_delta,  na.rm = TRUE)
+pred_grid$soil_june_delta <- median(clean.data$soil_june_delta, na.rm = TRUE)
+pred_grid$tmax_june_delta <- median(clean.data$tmax_june_delta, na.rm = TRUE)
+pred_grid$ws_june_delta <- median(clean.data$ws_june_delta, na.rm = TRUE)
+
+p_full <- predict(modGS.tmin, newdata = pred_grid, se.fit = TRUE)
+pred_grid$fit_full <- p_full$fit
+pred_grid$se_full  <- p_full$se.fit
+
+pred_plot <- ggplot(pred_grid, aes(x = tmin_june_delta, y = fit_full, color = ESU, group = ESU)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = fit_full - 2*se_full, ymax = fit_full + 2*se_full, fill = ESU),
+              alpha = 0.15, colour = NA) +
+  theme_classic() +
+  guides(fill = "none") +
+  ylab("Predicted Abd Trend")+
+  xlab(expression("Change in" ~T[min]))+
+  facet_wrap(~ESU, scales = "free", ncol = 5) +
+  scale_fill_manual(values = cols,
+                    breaks = names(cols),
+                    name = "ESU")+
+  theme(
+  strip.text = element_blank(),
+  axis.text.x = element_text(size=8, 
+                             angle =90,
+                             vjust = 0.5,
+                             hjust = 1),
+  legend.position = "none")+
+  scale_color_manual(values = cols)
+
+pred_plot
+ggsave("../figures_output/BANS_tminGAM_allAU_K3_predictedtrend.png", height=2, width=6)
+pdf("../figures_output/BANS_tminGAM_allAU_K3_predictedtrend.pdf", width = 8, height = 2)
+print(pred_plot)
+dev.off()
+```
+
+##### TMAN
+```{r}
+modGS.tmax <- readRDS("../../04.predictors_of_decline/outputs/GAM_outputs/function_out/AU_K3/modGS_tmax.rds")
+```
+
+```{r}
+pred_grid <- expand.grid(
+  tmax_june_delta = seq(
+    min(clean.data$tmax_june_delta, na.rm = TRUE),
+    max(clean.data$tmax_june_delta, na.rm = TRUE),
+    length.out = 100
+  ),
+  ESU = levels(clean.data$ESU)
+)
+
+cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K3.rds")
+#names(cols) <- CU_names_ref$Name
+
+pred_grid$ppt_june_delta  <- median(clean.data$ppt_june_delta,  na.rm = TRUE)
+pred_grid$soil_june_delta <- median(clean.data$soil_june_delta, na.rm = TRUE)
+pred_grid$tmin_june_delta <- median(clean.data$tmin_june_delta, na.rm = TRUE)
+pred_grid$ws_june_delta <- median(clean.data$ws_june_delta, na.rm = TRUE)
+
+p_full <- predict(modGS.tmax, newdata = pred_grid, se.fit = TRUE)
+pred_grid$fit_full <- p_full$fit
+pred_grid$se_full  <- p_full$se.fit
+
+pred_plot <- ggplot(pred_grid, aes(x = tmax_june_delta, y = fit_full, color = ESU, group = ESU)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = fit_full - 2*se_full, ymax = fit_full + 2*se_full, fill = ESU),
+              alpha = 0.15, colour = NA) +
+  theme_classic() +
+  guides(fill = "none") +
+  ylab("Predicted Abd Trend")+
+  xlab(expression("Change in" ~T[max]))+
+  facet_wrap(~ESU, scales = "free", ncol = 5) +
+  scale_fill_manual(values = cols,
+                    breaks = names(cols),
+                    name = "ESU")+
+  theme(
+  strip.text = element_blank(),
+  axis.text.x = element_text(size=8, 
+                             angle =90,
+                             vjust = 0.5,
+                             hjust = 1),
+  legend.position = "none")+
+  scale_color_manual(values = cols)
+
+pred_plot
+ggsave("../figures_output/BANS_tmaxGAM_allAU_K3_predictedtrend.png", height=2, width=6)
+pdf("../figures_output/BANS_tmaxGAM_allAU_K3_predictedtrend.pdf", width = 8, height = 2)
+print(pred_plot)
+dev.off()
+```
+
+##### PRECIP
+```{r}
+modGS.ppt <- readRDS("../../04.predictors_of_decline/outputs/GAM_outputs/function_out/G5/modGS_ppt.rds")
+```
+
+```{r}
+pred_grid <- expand.grid(
+  ppt_june_delta = seq(
+    min(clean.data$ppt_june_delta, na.rm = TRUE),
+    max(clean.data$ppt_june_delta, na.rm = TRUE),
+    length.out = 100
+  ),
+  ESU = levels(clean.data$ESU)
+)
+
+cols <- readRDS("../../03.delineate_ESUs/figures/colors/CU_grouping_colors_3_G5.rds")
+
+pred_grid$tmax_june_delta  <- median(clean.data$tmax_june_delta,  na.rm = TRUE)
+pred_grid$soil_june_delta <- median(clean.data$soil_june_delta, na.rm = TRUE)
+pred_grid$tmin_june_delta <- median(clean.data$tmin_june_delta, na.rm = TRUE)
+pred_grid$ws_june_delta <- median(clean.data$ws_june_delta, na.rm = TRUE)
+
+p_full <- predict(modGS.ppt, newdata = pred_grid, se.fit = TRUE)
+pred_grid$fit_full <- p_full$fit
+pred_grid$se_full  <- p_full$se.fit
+
+ggplot(pred_grid, aes(x = ppt_june_delta, y = fit_full, color = ESU, group = ESU)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = fit_full - 2*se_full, ymax = fit_full + 2*se_full, fill = ESU),
+              alpha = 0.15, colour = NA) +
+  theme_classic() +
+  guides(fill = "none") +
+  ylab("Predicted Abd Trend")+
+  xlab(expression("Change in" ~ppt))+
+  facet_wrap(~ESU, scales = "free", ncol = 5) +
+  scale_fill_manual(values = cols,
+                    breaks = names(cols),
+                    name = "ESU")+
+  theme(
+  strip.text = element_blank(),
+  axis.text.x = element_text(size=8, 
+                             angle =90,
+                             vjust = 0.5,
+                             hjust = 1),
+  legend.position = "none")+
+  scale_color_manual(values = cols)
+
+  
+ggsave("../figures_output/BANS_pptGAM_allG5_predictedtrend.png", height=2, width=6)
 ```
 
 ### modS
@@ -366,7 +650,7 @@ for (scheme in schemes) {
 source("plot_modS_modGS_predictions_all_schemes.R")
 
 pred_out_modS <- plot_modS_modGS_predictions_all_schemes(
-  schemes = c("G4", "G5", "GM5", "GM6"),
+  schemes = "G5",
   model = "modS",
   focal_vars = c("tmax_june_delta", "ppt_june_delta", "soil_june_delta", "ws_june_delta", "tmin_june_delta"),
   plot_dims = list(width = 7, height = 4),
@@ -403,8 +687,6 @@ for (scheme in schemes) {
   )
 }
 ```
-
-
 
 # GENOMIC OFFSET FIGURES
 ## GO PER ESU Plots
@@ -645,3 +927,359 @@ ggplot(
   )
 ggsave("results/GO_per_ESU_mean_bar.png")
 ```
+
+# NEW MIGRATION MAP
+```{r}
+map <- ne_states(
+  country = c("United States of America", "Canada", "Mexico", "Colombia"),
+  returnclass = "sf"
+)
+
+na_union <- st_union(map)
+
+breeding.sf <- st_read("../../../raw_data/spatial_files/banswa_range_2023.gpkg") %>%
+  filter(season == "breeding") %>%
+  st_transform(st_crs(map))
+
+breeding_na <- st_intersection(breeding.sf, na_union)
+
+lamproj <- "+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+
+bb <- st_bbox(breeding_na) %>%
+  st_as_sfc() %>%
+  st_transform(lamproj) %>%
+  st_bbox()
+
+# expand southward to include northern South America
+bb["ymin"] <- bb["ymin"] - 3000000
+bb["xmin"] <- bb["xmin"] - 500000
+bb["xmax"] <- bb["xmax"] + 500000
+
+coastlines <- ne_download(scale = 10, type = "coastline", category = "physical", returnclass = "sf")
+countries <- ne_download(scale = 10, type = "admin_0_boundary_lines_land", category = "cultural", returnclass = "sf")
+states <- ne_download(scale = 10, type = "admin_1_states_provinces_lines", category = "cultural", returnclass = "sf")
+ocean <- ne_download(scale = 10, type = "ocean", category = "physical", returnclass = "sf")
+lakes <- ne_download(scale = 10, type = "lakes", category = "physical", returnclass = "sf")
+
+ggplot() +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = ocean, fill = "#bddbe6") +
+  geom_sf(data = lakes, fill = "#bddbe6")+
+  coord_sf(
+    crs = st_crs(lamproj),
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE) +
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1))
+ggsave("../figures_output/plain_base_map.png")
+
+```
+
+# UPDATED ABUNDANCE TREND FIGURES
+```{r}
+data <- read.csv("../../04.predictors_of_decline/scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold4.csv")
+
+clean.data <- data %>% filter(!is.na(ESU))
+nrow(clean.data)
+
+clean.data$ESU <- factor(clean.data$ESU)
+
+table(clean.data$ESU)
+
+cols <- readRDS("../colors/AU_grouping_colors_K3.rds")
+
+CU_names_ref <- data.frame(
+  ESU = c("AU1", "AU2", "AU3"),
+  Name = c(
+    "Western",
+    "Eastern",
+    "Northern"
+  )
+)
+
+K <- length(cols)
+
+clean.data <- data %>% filter(!is.na(ESU))
+
+clean.data.names <- left_join(clean.data, CU_names_ref, by="ESU")
+
+abd_trend <- ggplot(clean.data.names, aes(x = Name, y = abd_trend, fill = ESU, color = ESU)) +
+  geom_violin(trim = FALSE, alpha = 0.5) +
+  geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.5) +
+  scale_fill_manual(values = cols) +
+  scale_color_manual(values = cols) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_classic() +
+  theme(legend.position = "none")
+
+ggsave(plot=abd_trend, "../figures_output/updated_abd_trend_AU_K3_violin.png", width = 6, height=3)
+
+pdf("../figures_output/updated_abd_trend_G5_violin.pdf", width=6, height=3)
+print(abd_trend)
+dev.off()
+```
+
+## UPDATED ADMIX PLOT
+```{r}
+library(data.table)
+# which K value do we want to pull?
+K_target <- 5
+
+# read in the Q files and pca files
+Q_tibble <- read.table("../../03.delineate_ESUs/scratch/pcadmix_output/BANS.filtered.unrel_pruned.alpha0.e4.run1.admix.5.Q") %>%
+  setNames(paste0("ESU", 1:5))
+pca_df <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.5.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+
+colnames(pca_df)[-1] <- paste0("PC", 1:(ncol(pca_df) - 1))
+names(pca_df)[1] <- "ind"
+
+Q_tibble$ind <- pca_df$ind
+
+# colors from before, just renamed
+component_colors <- readRDS("../../03.delineate_ESUs/figures/colors/CU_grouping_colors_2_G5.rds")
+
+# Cluster membership and letter
+pops <- read.csv("../../03.delineate_ESUs/scratch/pops.csv") %>%
+  transmute(ind = BGP_ID, Group)
+
+letter_key <- read.csv("../../03.delineate_ESUs/scratch/cluster_letter_key_geo_lonlat.csv")
+
+pops.cluster.letter <- left_join(pops, letter_key, by="Group")
+
+Q_tibble2 <- Q_tibble %>%
+  left_join(pops.cluster.letter, by = "ind") %>%
+  filter(!is.na(cluster_letter))
+
+# Long format for ggplot
+desired_order <- c("A", "B", "C", "E", "H", "J", "L", "O", "P", "Q", "R", "S", 
+                   "T", "U", 
+                   "G", "I", "K", "M", "N",
+                   "D", "F")
+
+ind_order <- Q_tibble2 %>%
+  mutate(
+    cluster_letter = factor(cluster_letter, levels = desired_order)
+  ) %>%
+  arrange(cluster_letter, Group, ind) %>%
+  pull(ind) %>%
+  unique()
+
+q_long <- Q_tibble2 %>%
+  mutate(
+    cluster_letter = factor(cluster_letter, levels = unique(letter_key$cluster_letter)),
+    ind = factor(ind, levels = ind_order)
+  ) %>%
+  pivot_longer(
+    cols = starts_with("ESU"),
+    names_to = "popGroup",
+    values_to = "prob"
+  ) %>%
+  mutate(
+    popGroup = factor(popGroup, levels = paste0("ESU", 1:K_target))
+  )
+
+# Plot
+K_plot <- ggplot(q_long, aes(x = ind, y = prob, fill = popGroup)) +
+  geom_col(color = "gray", linewidth = 0.1) +
+  facet_grid(~cluster_letter, switch = "x", scales = "free", space = "free") +
+  theme_minimal() +
+  labs(x = "", y = "Ancestry", title = "") +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_discrete(expand = expansion(add = 1)) +
+  theme(
+    panel.spacing.x = unit(0.001, "lines"),
+    axis.text.x = element_blank(),
+    strip.text.x = element_text(angle = 0, vjust = 0.5, hjust = 0.5, size = 8),
+    panel.grid = element_blank()
+  ) +
+  scale_fill_manual(values = component_colors, guide = "none")
+
+K_plot
+
+out_plot <- "../../03.delineate_ESUs/figures/admix_plots/BANS_admix_overall_alpha0_G4_letters_reordered.png"
+
+ggsave(out_plot, K_plot, width = 10, height = 2.2, units = "in", dpi = 300, bg = "white")
+
+pops %>% count(Group)
+```
+
+# OVERALL PCA OUTPUT
+```{r}
+plink_pca <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+eigenval <- scan("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenval")
+
+pve05 <- data.frame(PC = 1:199, pve = eigenval/sum(eigenval)*100)
+
+# set names
+pca05 <- plink_pca
+colnames(pca05)[-1] <- paste0("PC", 1:(ncol(pca05) - 1))
+names(pca05)[1] <- "ind"
+nrow(pca05)
+#correct number of samples
+
+bg <- readRDS("../../03.delineate_ESUs/figures/colors/bg_colors_new.rds")
+
+pops <- read.csv("../../03.delineate_ESUs/scratch/pops.csv") %>% filter(BGP_ID %in% pca05$ind)
+
+# Join PCA data
+pca.cluster <- left_join(pca05, pops %>% rename(ind=BGP_ID), by="ind")  # left_join PCA first to preserve PC columns
+
+samp_unrel  <-  read.table("../../03.delineate_ESUs/scratch/BANS_unrel_sample_list_short_2.txt", header = F)
+pca.cluster.norel <- pca.cluster %>% filter(ind %in% samp_unrel$V1)
+nrow(pca.cluster.norel)
+
+geo_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels.RDS")
+region_order <- c(
+  "Cluster_1", "Cluster_5", "Cluster_17", "Cluster_4", "Cluster_8", "Cluster_13", "Cluster_2", "Cluster_21",
+  "Cluster_3", "Cluster_7", "Cluster_18", "Cluster_19", "Cluster_22", "Cluster_20",
+  "Cluster_12", "Cluster_15", "Cluster_14", "Cluster_10", "Cluster_9", "Cluster_11", "Cluster_6", "Cluster_16"
+)
+
+pca.cluster.norel <- pca.cluster.norel %>%
+  left_join(geo_key, by = "Group") %>%
+  mutate(
+    Group = factor(Group, levels = region_order)
+  )
+
+# make one label per Group, in the same order
+group_labels <- pca.cluster.norel %>%
+  distinct(Group, Group_label) %>%
+  arrange(Group)
+
+label_vec <- setNames(group_labels$Group_label, group_labels$Group)
+
+# make sure colors are in the same order
+bg_use <- bg[region_order]
+
+overall.pca <- ggplot(
+  pca.cluster.norel,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Group,
+    text = paste0(
+      "ID: ", ind, "<br>",
+      "Location: ", Group_label, "<br>",
+      "PC1: ", round(PC1, 4), "<br>",
+      "PC2: ", round(PC2, 4)
+    )
+  )
+) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = bg_use,
+    breaks = region_order,
+    labels = label_vec[region_order],
+    name = "Location"
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )+
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+overall.pca
+
+pdf("../figures_output/BANS_overall_ld0.2_PCA.pdf", width = 8, height = 6)
+print(overall.pca)
+dev.off()
+```
+
+```{r}
+plink_pca <- read.table("../../07.adaptive_analysis/scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenvec", header = FALSE) %>% dplyr::select(-V2)
+eigenval <- scan("../../07.adaptive_analysis/scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenval")
+
+pve05 <- data.frame(PC = 1:199, pve = eigenval/sum(eigenval)*100)
+ggplot(pve05[1:20, ], aes(x = PC, y = pve)) +
+  geom_col(width = 0.9) +
+  labs(x = "PC", y = "PVE (%)") +
+  theme_bw()
+
+# set names
+pca05 <- plink_pca
+colnames(pca05)[-1] <- paste0("PC", 1:(ncol(pca05) - 1))
+names(pca05)[1] <- "ind"
+nrow(pca05)
+#correct number of samples
+
+bg <- readRDS("../../03.delineate_ESUs/figures/colors/bg_colors_new.rds")
+
+pops <- read.csv("../../03.delineate_ESUs/scratch/pops.csv") %>% filter(BGP_ID %in% pca05$ind)
+
+# Join PCA data
+pca.cluster <- left_join(pca05, pops %>% rename(ind=BGP_ID), by="ind")  # left_join PCA first to preserve PC columns
+
+samp_unrel  <-  read.table("../../03.delineate_ESUs/scratch/BANS_unrel_sample_list_short_2.txt", header = F)
+pca.cluster.norel <- pca.cluster %>% filter(ind %in% samp_unrel$V1)
+nrow(pca.cluster.norel)
+
+geo_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels.RDS")
+region_order <- c(
+  "Cluster_1", "Cluster_5", "Cluster_17", "Cluster_4", "Cluster_8", "Cluster_13", "Cluster_2", "Cluster_21",
+  "Cluster_3", "Cluster_7", "Cluster_18", "Cluster_19", "Cluster_22", "Cluster_20",
+  "Cluster_12", "Cluster_15", "Cluster_14", "Cluster_10", "Cluster_9", "Cluster_11", "Cluster_6", "Cluster_16"
+)
+
+pca.cluster.norel <- pca.cluster.norel %>%
+  left_join(geo_key, by = "Group") %>%
+  mutate(
+    Group = factor(Group, levels = region_order)
+  )
+
+# make one label per Group, in the same order
+group_labels <- pca.cluster.norel %>%
+  distinct(Group, Group_label) %>%
+  arrange(Group)
+
+label_vec <- setNames(group_labels$Group_label, group_labels$Group)
+
+# make sure colors are in the same order
+bg_use <- bg[region_order]
+
+adaptive.pca <- ggplot(
+  pca.cluster.norel,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Group,
+    text = paste0(
+      "ID: ", ind, "<br>",
+      "Location: ", Group_label, "<br>",
+      "PC1: ", round(PC1, 4), "<br>",
+      "PC2: ", round(PC2, 4)
+    )
+  )
+) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = bg_use,
+    breaks = region_order,
+    labels = label_vec[region_order],
+    name = "Location"
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = gray(0.8)) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )+
+  xlab(paste0("PC1 (", signif(pve05$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve05$pve[2], 3), "%)"))
+
+adaptive.pca
+
+pdf("../figures_output/BANS_adaptive_z3_PCA.pdf", width = 8, height = 6)
+print(adaptive.pca)
+dev.off()
+```
+
+

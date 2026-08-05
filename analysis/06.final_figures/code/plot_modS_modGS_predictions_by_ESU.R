@@ -1,5 +1,4 @@
 plot_modS_modGS_predictions_all_schemes <- function(
-    data,
     schemes,
     cols,
     CU_names_ref,
@@ -8,17 +7,16 @@ plot_modS_modGS_predictions_all_schemes <- function(
     response_label = "Predicted Abundance Trend",
     predictor_data_dir = "../../04.predictors_of_decline/scratch/spatial_predictors",
     model_dir = "../../04.predictors_of_decline/outputs/GAM_outputs/function_out",
-    color_dir = "../colors",
     out_dir = "../figures_output",
     covars = c("ppt_june_delta", "soil_june_delta", "tmax_june_delta", "tmin_june_delta", "ws_june_delta"),
     n_points = 100,
-    plot_dims = list(width = 7, height = 4),
+    plot_dims = list(width = 6, height = 2),
     x_labels = NULL,
+    ncol_facets = 5,
     save_plots = TRUE
 ) {
   
   model <- match.arg(model)
-  
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   
   out <- vector("list", length(schemes))
@@ -26,15 +24,22 @@ plot_modS_modGS_predictions_all_schemes <- function(
   
   for (scheme in schemes) {
     
-    CU_names_ref <- CU_names_ref
-    
-    cols <- cols
-    
-    data <- data
+    data <- read.csv(
+      file.path(
+        predictor_data_dir,
+        paste0("spatial_predictor_data_xy_from_ESU_", scheme, "_threshold45.csv")
+      )
+    )
     
     clean.data <- data %>%
       dplyr::filter(!is.na(ESU)) %>%
       dplyr::mutate(ESU = factor(ESU))
+    
+    clean.data <- clean.data %>%
+      dplyr::left_join(CU_names_ref, by = "ESU") %>%
+      dplyr::mutate(
+        ESU_label = factor(Name, levels = unique(Name))
+      )
     
     scheme_out_dir <- file.path(out_dir, paste0(model, "_predictions"), scheme)
     dir.create(scheme_out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -63,6 +68,7 @@ plot_modS_modGS_predictions_all_schemes <- function(
         ),
         ESU = levels(clean.data$ESU)
       )
+      
       names(pred_grid)[1] <- focal_var
       
       for (v in other_covars) {
@@ -74,11 +80,15 @@ plot_modS_modGS_predictions_all_schemes <- function(
       pred_grid$ESU <- factor(pred_grid$ESU, levels = levels(clean.data$ESU))
       
       p_full <- predict(mod_obj, newdata = pred_grid, se.fit = TRUE)
+      
       pred_grid$fit_full <- p_full$fit
       pred_grid$se_full  <- p_full$se.fit
       
       pred_grid_named <- pred_grid %>%
-        dplyr::left_join(CU_names_ref, by = "ESU")
+        dplyr::left_join(CU_names_ref, by = "ESU") %>%
+        dplyr::mutate(
+          ESU_label = factor(Name, levels = unique(Name))
+        )
       
       x_lab <- if (is.null(x_labels)) {
         focal_var
@@ -93,32 +103,43 @@ plot_modS_modGS_predictions_all_schemes <- function(
         ggplot2::aes(
           x = .data[[focal_var]],
           y = fit_full,
-          color = Name,
-          group = Name
+          color = ESU,
+          group = ESU
         )
       ) +
-        ggplot2::geom_line() +
+        ggplot2::geom_line(linewidth = 0.8) +
         ggplot2::geom_ribbon(
           ggplot2::aes(
             ymin = fit_full - 2 * se_full,
             ymax = fit_full + 2 * se_full,
-            fill = Name
+            fill = ESU
           ),
           alpha = 0.15,
           colour = NA
         ) +
         ggplot2::theme_classic() +
         ggplot2::guides(fill = "none") +
-        ggplot2::scale_color_manual(values = cols) +
-        ggplot2::scale_fill_manual(values = cols) +
+        ggplot2::ylab(response_label) +
         ggplot2::xlab(x_lab) +
-        ggplot2::ylab(response_label)
+        ggplot2::facet_wrap(~ ESU_label, scales = "free", ncol = ncol_facets) +
+        ggplot2::scale_fill_manual(values = cols, breaks = names(cols), name = "ESU") +
+        ggplot2::scale_color_manual(values = cols, breaks = names(cols), name = "ESU") +
+        ggplot2::theme(
+          strip.text = ggplot2::element_blank(),
+          axis.text.x = ggplot2::element_text(
+            size = 8,
+            angle = 90,
+            vjust = 0.5,
+            hjust = 1
+          ),
+          legend.position = "none"
+        )
       
       if (save_plots) {
         ggplot2::ggsave(
           filename = file.path(
             scheme_out_dir,
-            paste0(model, "_", focal_var, "_predictions_", scheme, ".png")
+            paste0(model, "_", focal_var, "_all_ESUs_predictions_", scheme, ".png")
           ),
           plot = p,
           width = plot_dims$width,

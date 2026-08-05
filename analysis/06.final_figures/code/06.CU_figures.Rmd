@@ -1,0 +1,978 @@
+---
+title: "06.ESU_figures"
+output: html_document
+---
+# LIBRARIES
+```{r, message=FALSE, warning=FALSE}
+library(terra)
+library(raster)
+library(data.table)
+library(ebirdst)
+library(rnaturalearth)
+library(sf)
+library(ggplot2)
+library(ggrepel)
+library(tidyterra)
+library(ggnewscale)
+```
+
+# OVERALL LOCI PLOT
+(Note, the following functions were generated using ChatGPT based on the above written out code that I produced, interpretation of results is my own)
+## Color Pallets
+The trick here is to get the color right for the spatial ESU rather than having the numbers be the same, cause the numbers aren't consistent across space with different K values.
+```{r}
+cols_ESU <- c(
+  "ESU1" = "#187795",
+  "ESU2" = "#FFBF46",
+  "ESU3" = "#C1839F"
+)
+saveRDS(cols_ESU, "../colors/ESU_grouping_colors_K3.rds")
+
+cols_G4 <-  c(
+  "ESU1" = "#FFBF46",
+  "ESU2" = "#FF5A5F",
+  "ESU3" = "#8ACB88",
+  "ESU4" = "#C1839F")
+barplot(
+  rep(1, length(cols_G4)),
+  col = cols_G4,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G4),
+  las = 2
+)
+saveRDS(cols_G4, "../colors/CU_grouping_colors_K4.rds")
+
+cols_G5 <-  c(
+  "ESU1" = "#FF5A5F",
+  "ESU2" = "#C1839F",
+  "ESU3" = "#FFBF46",
+  "ESU4" = "#8ACB88",
+  "ESU5" = "#187795")
+barplot(
+  rep(1, length(cols_G5)),
+  col = cols_G5,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G5),
+  las = 2
+)
+saveRDS(cols_G5, "../colors/CU_grouping_colors_K5.rds")
+```
+
+## Genoscapes
+```{r}
+source("../../03.delineate_ESUs/code/prep_genoscape_inputs.R")
+source("../../03.delineate_ESUs/code/build_genoscape_surfaces.R")
+
+############# PICK A K VALUE #############
+K <- 4
+Q_tibble <- read.table("../../03.delineate_ESUs/scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e3.run1.admix.4.Q") %>%
+setNames(paste0("ESU", 1:K))
+
+out_plot_genoscape_png <- paste0("BANS_genoscape_overall_K4_final.png")
+out_plot_genoscape_pdf <- paste0("BANS_genoscape_overall_K4_final.pdf")
+genoscape_path <- "../figures_output/genoscape_outputs/"
+cols <- readRDS("../colors/CU_grouping_colors_K4.rds")
+
+K <- 3
+Q_tibble <- read.table("../../03.delineate_ESUs/scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e2.run1.admix.3.Q") %>%
+setNames(paste0("ESU", 1:K))
+
+out_plot_genoscape_png <- paste0("BANS_genoscape_overall_K3_final.png")
+out_plot_genoscape_pdf <- paste0("BANS_genoscape_overall_K3_final.pdf")
+genoscape_path <- "../figures_output/genoscape_outputs/"
+cols <- readRDS("../colors/ESU_grouping_colors_K3.rds")
+############# OTHER INPUT FILES #############
+pca_df <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE)
+
+all <- read_csv("../../../raw_data/BANS_all_sample_data_shifted.csv")
+############# MAKE Q_TIBBLE #############
+prep_out <- prep_genoscape_inputs(
+  Q_tibble = Q_tibble,
+  pca_df = pca_df,
+  all = all
+)
+
+Q_tibble <- prep_out$Q_tibble
+Q_matrix <- prep_out$Q_matrix
+long_lat_matrix <- prep_out$long_lat_matrix
+LatLong_tibble <- prep_out$LatLong_tibble
+K <- ncol(Q_matrix)
+q_cols <- colnames(Q_matrix)
+
+############# GET BASE MAP AND RANGE #############
+map <- ne_states(
+  country = c("United States of America", "Canada"),
+  returnclass = "sf"
+)
+
+na_union <- st_union(map)
+
+breeding.sf <- st_read("../../../raw_data/spatial_files/banswa_range_2023.gpkg") %>%
+  filter(season == "breeding") %>%
+  st_transform(crs(map))
+
+breeding_na <- st_intersection(breeding.sf, na_union)
+
+############# BUILD THE GENOSCAPE #############
+surf_out <- build_genoscape_surfaces(
+  Q_matrix = Q_matrix,
+  long_lat_matrix = long_lat_matrix,
+  breeding_na = breeding_na,
+  cols = cols,
+  K = K,
+  brick_names = q_cols,
+  alpha_threshold = 0,
+  krig_val=30
+)
+
+genoscape_projected <- surf_out$genoscape_projected
+
+coords_sf <- st_as_sf(
+  LatLong_tibble,
+  coords = c("Long", "Lat"),
+  crs = 4326   # WGS84 (lon/lat)
+)
+
+# then we want to get the sample points as coded by letter, which I established previously
+cluster_geo <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels_centroids.RDS")
+
+## make sf points from lon/lat
+cluster_geo_sf <- st_as_sf(
+  cluster_geo,
+  coords = c("Y", "X"),
+  crs = 4326,      # lon/lat
+  remove = FALSE
+)
+
+## transform to your map CRS (lamproj must be a valid CRS/proj string)
+cluster_geo_sf <- st_transform(cluster_geo_sf, st_crs(lamproj))
+
+genoscape <- ggplot() +
+  ggspatial::layer_spatial(genoscape_projected) +
+  geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = ocean, fill = "#bddbe6") +
+  geom_sf(data = lakes, fill = "#bddbe6") + #bddbe6
+  #geom_spatial_point(data = long_lat_tibble, mapping = aes(x = Long, y = Lat), size=1, alpha = 0.7) + 
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1)) +
+  geom_sf(data=cluster_geo_sf,
+          size = 0.5)+
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)+
+  geom_label_repel(
+    data = cluster_geo_sf,
+    aes(label = Group_label, geometry = geometry),
+    stat = "sf_coordinates",
+    size = 1.5,            # increase text size (try 2.2–3.0
+    fontface = "bold",
+    label.size = .1,
+    label.padding = unit(0.1, "lines"),
+    label.r=0,
+    fill = "white",
+    alpha = 1,
+    point.padding = 0.1,
+    segment.color = "black",
+    segment.size = 0.25,
+    min.segment.length = 0
+)
+
+############# SAVE THE GENOSCAPE #############
+ggsave(plot=genoscape, path=genoscape_path, filename=out_plot_genoscape_png, width = 7, height = 4.5)
+
+pdf(paste0(genoscape_path,out_plot_genoscape_pdf))
+print(genoscape)
+dev.off()
+```
+
+## Admixture plots
+```{r}
+source("../../03.delineate_ESUs/code/make_admix_barplot_and_assignments.R")
+
+
+admix_plot_path <- "../figures_output/admix_plots/"
+admix_group_path <- "../scratch/admix_output/"
+pca_df <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE)
+
+pops <- readr::read_csv("../../03.delineate_ESUs/scratch/pops.csv", show_col_types = FALSE)
+letter_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels_centroids.RDS")
+
+######## INPUT #########
+K <- 4
+Q_tibble <- read.table("../../03.delineate_ESUs/scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e3.run1.admix.4.Q") %>%
+setNames(paste0("ESU", 1:K))
+out_plot_admix <- "BANS_admix_overall_K4.png"
+out_plot_admix_pdf <- "BANS_admix_overall_K4.pdf"
+out_group_admix <- "BANS_admix_grouping_K4.tsv"
+cols <- readRDS("../colors/CU_grouping_colors_K4.rds")
+group_label_order <- c("WA", "AK", "NT", "YT", "BC_1", "AB", "BC_2", "SK", "MT", "MB_1", "WY_1", "WY_2", "ND", "MB_2", "ON", "NS_1", "QC_2", "QC_1", "NB", "NS_2", "PE", "NL")
+length(group_label_order)==22
+
+K <- 3
+Q_tibble <- read.table("../../03.delineate_ESUs/scratch/admix_output/pcadmix_output/BANS.filtered.unrel_pruned0.2.alpha0.e2.run1.admix.3.Q") %>%
+setNames(paste0("ESU", 1:K))
+out_plot_admix <- "BANS_admix_overall_K3.png"
+out_plot_admix_pdf <- "BANS_admix_overall_K3.pdf"
+out_group_admix <- "BANS_admix_grouping_K3.tsv"
+cols <- readRDS("../colors/ESU_grouping_colors_K3.rds")
+group_label_order <- group_label_order <- c("WA", "NT", "AK", "YT", "SK", "MB_1", "MB_2", "MT", "ND", "WY_1", "WY_2", "AB", "BC_1", "BC_2", "ON", "QC_1", "QC_2", "NS_1", "NS_2", "NB", "PE", "NL")
+length(group_label_order)==22
+
+######## RUNNING FUNCTION ########
+admix_out <- make_admix_barplot_and_assignments(
+  K_target = K,
+  cols = cols,
+  group_label_order = group_label_order,
+  threshold = 0.55,
+  Q_tibble = Q_tibble,
+  pca_df = pca_df,
+  pops = pops,
+  geo_key = letter_key,
+  out_plot = paste0(admix_plot_path,out_plot_admix),
+  out_assignments = paste0(admix_group_path,out_group_admix)
+)
+
+K_plot <- admix_out$K_plot
+
+K_plot
+ggsave(path=admix_plot_path, filename=out_plot_admix, plot=K_plot, width = 10, height = 2.2, units = "in", dpi = 300, bg = "white")
+############
+pdf(paste0(admix_plot_path, out_plot_admix_pdf), width = 10, height = 2.2)
+print(K_plot)
+dev.off()
+```
+
+# ADAPTIVE
+## Color Pallets
+The trick here is to get the color right for the spatial ESU rather than having the numbers be the same, cause the numbers aren't consistent across space with different K values.
+```{r}
+cols_AU <- c(
+  "AU1" = "#2589BD",
+  "AU2" = "#FF5A5F",
+  "AU3" = "#8ACB88"
+)
+saveRDS(cols_AU, "../colors/AU_grouping_colors_K3.rds")
+
+cols_AU <- c(
+  "AU1" = "#187795",
+  "AU2" = "#FFBF46",
+  "AU3" = "#C1839F"
+)
+
+cols_G4 <-  c(
+  "AU1" = "#187795",
+  "AU2" = "#FF5A5F",
+  "AU3" = "#8ACB88",
+  "AU4" = "#C1839F")
+barplot(
+  rep(1, length(cols_G4)),
+  col = cols_G4,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G4),
+  las = 2
+)
+saveRDS(cols_G4, "../colors/AU_grouping_colors_K4.rds")
+
+cols_G4 <-  c(
+  "AU1" = "#FF5A5F",
+  "AU2" = "#187795",
+  "AU3" = "#FFBF46",
+  "AU4" = "#C1839F")
+barplot(
+  rep(1, length(cols_G4)),
+  col = cols_G4,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G4),
+  las = 2
+)
+saveRDS(cols_G4, "../colors/AU_grouping_colors_K4_2.rds")
+
+cols_G5 <-  c(
+  "AU1" = "#FFBF46",
+  "AU2" = "#FF5A5F",
+  "AU3" = "#C1839F",
+  "AU4" = "#187795",
+  "AU5" = "#8ACB88")
+barplot(
+  rep(1, length(cols_G5)),
+  col = cols_G5,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(cols_G5),
+  las = 2
+)
+saveRDS(cols_G5, "../colors/AU_grouping_colors_K5.rds")
+```
+
+## Genoscapes
+```{r}
+source("../../03.delineate_ESUs/code/prep_genoscape_inputs.R")
+source("../../03.delineate_ESUs/code/build_genoscape_surfaces.R")
+
+############# PICK A K VALUE #############
+K <- 3
+Q_tibble <- read.table("../../07.adaptive_analysis/scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e2.run1.admix.3.Q") %>% setNames(paste0("AU", 1:K))
+
+out_plot_genoscape_png <- paste0("BANS_genoscape_adaptive_K3_final.png")
+out_plot_genoscape_pdf <- paste0("BANS_genoscape_adaptive_K3_final.pdf")
+genoscape_path <- "../figures_output/genoscape_outputs/"
+cols <- readRDS("../colors/AU_grouping_colors_K3.rds")
+
+K <- 4
+Q_tibble <- read.table("../../07.adaptive_analysis/scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e3.run1.admix.4.Q") %>% setNames(paste0("AU", 1:K))
+
+out_plot_genoscape_png <- paste0("BANS_genoscape_adaptive_K4_final_2.png")
+out_plot_genoscape_pdf <- paste0("BANS_genoscape_adaptive_K4_final_2.pdf")
+genoscape_path <- "../figures_output/genoscape_outputs/"
+cols <- readRDS("../colors/AU_grouping_colors_K4_2.rds")
+
+K <- 5
+Q_tibble <- read.table("../../07.adaptive_analysis/scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e4.run1.admix.5.Q") %>% setNames(paste0("AU", 1:K))
+
+out_plot_genoscape_png <- paste0("BANS_genoscape_adaptive_K5_final.png")
+out_plot_genoscape_pdf <- paste0("BANS_genoscape_adaptive_K5_final.pdf")
+genoscape_path <- "../figures_output/genoscape_outputs/"
+cols <- readRDS("../colors/AU_grouping_colors_K5.rds")
+
+############# OTHER INPUT FILES #############
+pca_df <- read.table("../../07.adaptive_analysis/scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenvec", header = FALSE)
+
+all <- read_csv("../../../raw_data/BANS_all_sample_data_shifted.csv")
+############# MAKE Q_TIBBLE #############
+prep_out <- prep_genoscape_inputs(
+  Q_tibble = Q_tibble,
+  pca_df = pca_df,
+  all = all
+)
+
+Q_tibble <- prep_out$Q_tibble
+Q_matrix <- prep_out$Q_matrix
+long_lat_matrix <- prep_out$long_lat_matrix
+LatLong_tibble <- prep_out$LatLong_tibble
+K <- ncol(Q_matrix)
+q_cols <- colnames(Q_matrix)
+
+############# GET BASE MAP AND RANGE #############
+map <- ne_states(
+  country = c("United States of America", "Canada"),
+  returnclass = "sf"
+)
+
+na_union <- st_union(map)
+
+breeding.sf <- st_read("../../../raw_data/spatial_files/banswa_range_2023.gpkg") %>%
+  filter(season == "breeding") %>%
+  st_transform(crs(map))
+
+breeding_na <- st_intersection(breeding.sf, na_union)
+
+############# BUILD THE GENOSCAPE #############
+surf_out <- build_genoscape_surfaces(
+  Q_matrix = Q_matrix,
+  long_lat_matrix = long_lat_matrix,
+  breeding_na = breeding_na,
+  cols = cols,
+  K = K,
+  brick_names = q_cols,
+  alpha_threshold = 0,
+  krig_val = 15
+)
+
+genoscape_projected <- surf_out$genoscape_projected
+
+coords_sf <- st_as_sf(
+  LatLong_tibble,
+  coords = c("Long", "Lat"),
+  crs = 4326   # WGS84 (lon/lat)
+)
+
+# then we want to get the sample points as coded by letter, which I established previously
+cluster_geo <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels_centroids.RDS")
+
+## make sf points from lon/lat
+cluster_geo_sf <- st_as_sf(
+  cluster_geo,
+  coords = c("Y", "X"),
+  crs = 4326,      # lon/lat
+  remove = FALSE
+)
+
+## transform to your map CRS (lamproj must be a valid CRS/proj string)
+cluster_geo_sf <- st_transform(cluster_geo_sf, st_crs(lamproj))
+
+genoscape <- ggplot() +
+  ggspatial::layer_spatial(genoscape_projected) +
+  geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = ocean, fill = "#bddbe6") +
+  geom_sf(data = lakes, fill = "#bddbe6") + #bddbe6
+  #geom_spatial_point(data = long_lat_tibble, mapping = aes(x = Long, y = Lat), size=1, alpha = 0.7) + 
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1)) +
+  geom_sf(data=cluster_geo_sf,
+          size = 0.5)+
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)+
+  geom_label_repel(
+    data = cluster_geo_sf,
+    aes(label = Group_label, geometry = geometry),
+    stat = "sf_coordinates",
+    size = 1.5,            # increase text size (try 2.2–3.0
+    fontface = "bold",
+    label.size = .1,
+    label.padding = unit(0.1, "lines"),
+    label.r=0,
+    fill = "white",
+    alpha = 1,
+    point.padding = 0.1,
+    segment.color = "black",
+    segment.size = 0.25,
+    min.segment.length = 0
+)
+
+############# SAVE THE GENOSCAPE #############
+ggsave(plot=genoscape, path=genoscape_path, filename=out_plot_genoscape_png, width = 7, height = 4.5)
+
+pdf(paste0(genoscape_path,out_plot_genoscape_pdf))
+print(genoscape)
+dev.off()
+```
+
+## Admixture plots
+```{r}
+source("../../07.adaptive_analysis/code/make_admix_barplot_and_assignments_adaptive.R")
+
+admix_plot_path <- "../figures_output/admix_plots/"
+admix_group_path <- "../scratch/admix_output/"
+pca_df <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE)
+
+pops <- readr::read_csv("../../03.delineate_ESUs/scratch/pops.csv", show_col_types = FALSE)
+letter_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels_centroids.RDS")
+
+######## INPUT #########
+K <- 3
+Q_tibble <- read.table("../../07.adaptive_analysis/scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e2.run1.admix.3.Q") %>% setNames(paste0("AU", 1:K))
+out_plot_admix <- "BANS_admix_adaptive_K3.png"
+out_plot_admix_pdf <- "BANS_admix_adaptive_K3.pdf"
+out_group_admix <- "BANS_admix_adaptive_grouping_K3.tsv"
+cols <- readRDS("../colors/AU_grouping_colors_K3.rds")
+group_label_order <- c("AK", "YT", "NT", "BC_1", "AB", "SK", "BC_2", "MB_1", "WA", "MT", "WY_1", "WY_2", "ND", "MB_2", "ON", "QC_2", "NS_1", "NB", "NS_2", "QC_1", "PE", "NL")
+length(group_label_order)==22
+
+K <- 4
+Q_tibble <- read.table("../../07.adaptive_analysis/scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e3.run1.admix.4.Q") %>% setNames(paste0("AU", 1:K))
+out_plot_admix <- "BANS_admix_adaptive_K4.png"
+out_plot_admix_pdf <- "BANS_admix_adaptive_K4.pdf"
+out_group_admix <- "BANS_admix_adaptive_grouping_K4.tsv"
+cols <- readRDS("../colors/AU_grouping_colors_K4.rds")
+group_label_order <- c("WA", "AK", "NT", "YT", "BC_1", "AB", "BC_2", "SK", "MT", "MB_1", "WY_1", "WY_2", "ND", "MB_2", "ON", "NS_1", "QC_2", "QC_1", "NB", "NS_2", "PE", "NL")
+length(group_label_order)==22
+
+K <- 5
+Q_tibble <- read.table("../../07.adaptive_analysis/scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e4.run1.admix.5.Q") %>% setNames(paste0("AU", 1:K))
+out_plot_admix <- "BANS_admix_adaptive_K5.png"
+out_plot_admix_pdf <- "BANS_admix_adaptive_K5.pdf"
+out_group_admix <- "BANS_admix_adaptive_grouping_K5.tsv"
+cols <- readRDS("../colors/AU_grouping_colors_K5.rds")
+group_label_order <- c("WA", "NT", "YT", "BC_1", "AB", "BC_2", "AK", "SK", "MT", "MB_1", "WY_1", "WY_2", "ND", "MB_2", "ON", "NS_1", "QC_2", "QC_1", "NB", "NS_2", "PE", "NL")
+length(group_label_order)==22
+
+######## RUNNING FUNCTION ########
+admix_out <- make_admix_barplot_and_assignments(
+  K_target = K,
+  cols = cols,
+  group_label_order = group_label_order,
+  threshold = 0.4,
+  Q_tibble = Q_tibble,
+  pca_df = pca_df,
+  pops = pops,
+  geo_key = letter_key,
+  out_plot = paste0(admix_plot_path,out_plot_admix),
+  out_assignments = paste0(admix_group_path,out_group_admix)
+)
+
+K_plot <- admix_out$K_plot
+
+K_plot
+ggsave(path=admix_plot_path, filename=out_plot_admix, plot=K_plot, width = 10, height = 2.2, units = "in", dpi = 300, bg = "white")
+############
+pdf(paste0(admix_plot_path, out_plot_admix_pdf), width = 10, height = 2.2)
+print(K_plot)
+dev.off()
+```
+## PCA plots
+```{r}
+source("../../03.delineate_ESUs/code/plot_pca_admix_solid.R")
+
+out_plot_pca1 <- "../figures_output/pca_plots/BANS_K5_PCA_ESUcoloring.png"
+base_cols_rds <- "../colors/CU_grouping_colors_K5.rds"
+
+cols <- readRDS(base_cols_rds)
+cols["No Assignment"] <- "#BDBDBD"
+
+admix_groups <- data.table::fread("../scratch/admix_output/BANS_admix_grouping_K5.tsv") %>% 
+  mutate(
+    admix_group = tidyr::replace_na(admix_group, "No Assignment")
+  )
+cols <- readRDS(base_cols_rds)
+
+cols["No Assignment"] <- "#BDBDBD"
+
+pca_df <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE)
+
+pops <- readr::read_csv("../../03.delineate_ESUs/scratch/pops.csv", show_col_types = FALSE)
+letter_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels_centroids.RDS")
+
+eigenval <- scan("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenval")
+
+solid_out <- plot_pca_admix_solid(
+  plink_pca = pca_df,
+  eigenval = eigenval,
+  cols = cols,
+  pops = pops,
+  admix_groups = admix_groups,
+  out_plot = out_plot_pca1
+)
+
+library(plotly)
+ggplotly(solid_out$pca_plot)
+```
+
+```{r}
+########## Colors ##########
+geo_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels.RDS")
+base_cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K3.rds")
+
+out_group_label_cols_rds <- "../figures/pcadmix_AU_3_group_label_colors.rds"
+out_plot <- "../figures/pca_plots/BANS_K3_PCA_AU_coloring.pdf"
+
+admix_groups <- data.table::fread("../../07.adaptive_analysis/scratch/admix_output/BANS_admix_grouping_adaptive_G3_2.tsv")
+
+pca_df <- pca_df <- read.table("../../07.adaptive_analysis/scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenvec", header = FALSE) %>% select(-V1)
+
+colnames(pca_df)[-1] <- paste0("PC", seq_len(ncol(pca_df) - 1))
+names(pca_df)[1] <- "BGP_ID"
+
+eigenval <- scan("../../07.adaptive_analysis/scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenval")
+
+pve <- tibble(
+  PC = seq_along(eigenval),
+  pve = eigenval / sum(eigenval) * 100
+)
+
+pops.groups.labels <- pops %>%
+  transmute(BGP_ID, Group) %>%
+  left_join(geo_key, by = "Group") %>%
+  left_join(admix_groups, by = "BGP_ID") %>%
+  mutate(
+    Group_label = trimws(as.character(Group_label)),
+    admix_group = replace_na(admix_group, "No Assignment")
+  )
+
+
+base_cols["No Assignment"] <- "#BDBDBD"
+
+label_owner <- pops.groups.labels %>%
+  filter(!is.na(Group_label)) %>%
+  count(Group_label, admix_group, name = "n") %>%
+  group_by(Group_label) %>%
+  slice_max(n, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  rename(owner_au = admix_group) %>%
+  mutate(owner_au = replace_na(owner_au, "No Assignment"))
+
+missing_cols <- setdiff(unique(label_owner$owner_au), names(base_cols))
+
+group_label_cols_df <- label_owner %>%
+  arrange(owner_au, Group_label) %>%
+  group_by(owner_au) %>%
+  group_modify(~{
+    base <- base_cols[[as.character(.y$owner_au)]]
+    labels <- .x$Group_label
+    
+    tibble(
+      Group_label = labels,
+      col = colorRampPalette(c("white", base))(length(labels) + 1)[-1]
+    )
+  }) %>%
+  ungroup()
+
+group_label_cols <- setNames(
+  group_label_cols_df$col,
+  group_label_cols_df$Group_label
+)
+
+saveRDS(group_label_cols, out_group_label_cols_rds)
+
+# Optional color check
+barplot(
+  rep(1, length(group_label_cols)),
+  col = group_label_cols,
+  border = NA,
+  names.arg = names(group_label_cols),
+  las = 2,
+  cex.names = 0.3
+)
+
+pca.cluster <- pca_df %>%
+  left_join(
+    pops.groups.labels %>%
+      left_join(
+        label_owner %>% select(Group_label, owner_au),
+        by = "Group_label"
+      ),
+    by = "BGP_ID"
+  ) %>%
+  mutate(
+    Group_label = trimws(as.character(Group_label)),
+    admix_group = replace_na(admix_group, "No Assignment"),
+    owner_au = replace_na(owner_au, "No Assignment")
+  )
+
+if (!is.null(desired_order)) {
+  desired_order <- as.character(desired_order)
+  
+  missing_from_palette <- setdiff(desired_order, names(group_label_cols))
+  
+  if (length(missing_from_palette) > 0) {
+    warning(
+      "These labels are in desired_order but not in group_label_cols: ",
+      paste(missing_from_palette, collapse = ", ")
+    )
+  }
+  
+  legend_order <- c(
+    desired_order[desired_order %in% names(group_label_cols)],
+    sort(setdiff(names(group_label_cols), desired_order))
+  )
+} else {
+  legend_order <- sort(names(group_label_cols))
+}
+
+group_label_cols <- group_label_cols[legend_order]
+
+pca.cluster <- pca.cluster %>%
+  mutate(Group_label = factor(Group_label, levels = legend_order))
+
+p <- ggplot(
+  pca.cluster,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Group_label,
+    shape=owner_au
+  )
+) +
+  scale_shape_manual(
+    values = c(
+      "AU1" = 16,   # filled circle
+      "AU2" = 17,   # filled triangle
+      "AU3" = 15,    # filled square
+      "No Assignment" = 18
+    ),
+    name = "Assigned AU"
+  ) +
+  geom_point(size = 3) +
+  scale_color_manual(
+    values = group_label_cols,
+    limits = legend_order,
+    drop = FALSE,
+    name = "Sampling location\nColored by AU"
+  ) +
+  theme_classic() +
+  xlab(paste0("PC1 (", signif(pve$pve[1], 3), "%)")) +
+  ylab(paste0("PC2 (", signif(pve$pve[2], 3), "%)"))
+
+p
+
+pdf("../figures_output/pca_plots/BANS_K3_PCA_AU_coloring.pdf", width=7, height=5)
+print(p)
+dev.off()
+```
+
+# TREND PLOTS
+```{r}
+trends_raster <- rast("../../04.predictors_of_decline/scratch/spatial_predictors/eBird_trends_BANS_proj4326.tif")
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+# get shapefiles from natural earth
+coastlines <- ne_download(scale = 10, type = "coastline", category = "physical", returnclass = "sf")
+countries <- ne_download(scale = 10, type = "admin_0_boundary_lines_land", category = "cultural", returnclass = "sf")
+states <- ne_download(scale = 10, type = "admin_1_states_provinces_lines", category = "cultural", returnclass = "sf")
+ocean <- ne_download(scale = 10, type = "ocean", category = "physical", returnclass = "sf")
+lakes <- ne_download(scale = 10, type = "lakes", category = "physical", returnclass = "sf")
+```
+
+## nicer base trend map
+```{r}
+map <- ne_states(country = c("United States of America", "Canada"), 
+                 returnclass = 'sf')
+na_union <- st_union(map)
+
+#BANS breeding range
+breeding.sf <- st_read("../../../raw_data/spatial_files/banswa_range_2023.gpkg") %>% filter(season=="breeding")  %>% st_transform(crs(map))
+
+#clip BANS range to just NA and make a single, clean polygon
+breeding_na <- st_intersection(breeding.sf, na_union)
+lamproj <- "+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+
+bb <- st_bbox(breeding_na) %>% st_transform(lamproj)
+
+trends_projected <- terra::project(trends_raster, lamproj, method = "near")
+
+colors <- colorRampPalette(brewer.pal(11, "RdBu"))(7)
+barplot(
+  rep(1, length(colors)),
+  col = colors,
+  border = NA,
+  axes = FALSE,
+  space = 0,
+  names.arg = names(colors),
+  las = 2
+)
+
+ # low = "#67001F",
+ #  mid = "white",
+ #  high = "#053061",
+
+trends_plot <- ggplot() +
+  tidyterra::geom_spatraster(data = trends_projected, na.rm = TRUE) +
+  scale_fill_gradient2(
+  low = "#3F3F3F",
+  mid = "#F5F3ED",
+  high = "#E0AA28",
+  midpoint = 0,
+  oob = scales::squish,
+  na.value=NA,
+  name = "Trend"
+)+
+  geom_sf(data = breeding_na, fill = "NA", linewidth = 0.1225 , alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = ocean, fill = "#bddbe6") +
+  geom_sf(data = lakes, fill = "#bddbe6") +
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1))+
+  coord_sf(
+  crs = st_crs(lamproj),
+  xlim = c(bb["xmin"], bb["xmax"]),
+  ylim = c(bb["ymin"], bb["ymax"]),
+  expand = FALSE)
+trends_plot
+ggsave(plot=trends_plot,"../figures_output/BANS_trends_plot_ggplot_2.png", height=4, width=8)
+```
+
+## genoscape polygons for overlap
+```{r}
+genoscape_polygons <- st_read("../../07.adaptive_analysis/outputs/BANS_AU_polygons_thresh.55_K3.shp")
+
+CU_names_ref <- data.frame(
+  ESU = c("AU1", "AU2", "AU3"),
+  Name = c(
+    "Western",
+    "Eastern",
+    "Northern"
+  )
+)
+
+genoscape_polygons$Cluster <- factor(
+  genoscape_polygons$Cluster,
+  levels = CU_names_ref$ESU,
+  labels = CU_names_ref$Name
+)
+
+cols <- readRDS("../colors/AU_grouping_colors_K3.rds")
+names(cols) <- CU_names_ref$Name
+
+out_overlap_plot <- paste0("../figures_output/trends/BANS_trends_plot_AU_K3_overlay_ggplot_colored_3.png")
+```
+
+```{r}
+trends_plot_overlaid <- ggplot() +
+  tidyterra::geom_spatraster(data = trends_projected, na.rm = TRUE) +
+  scale_fill_gradient2(
+  low = "#3F3F3F",
+  mid = "#F5F3ED",
+  high = "#E0AA28",
+  midpoint = 0,
+  oob = scales::squish,
+  na.value=NA,
+  name = "Trend"
+)+
+  geom_sf(data = countries, fill = NA, linewidth = 0.25)+
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225)+
+  geom_sf(data = states, fill = NA, linewidth = 0.1225, alpha=.5)+
+  geom_sf(data = ocean, fill = "#bddbe6")+
+  geom_sf(data = lakes, fill = "#bddbe6")+
+  ggnewscale::new_scale_fill() +
+  ggspatial::layer_spatial(
+        genoscape_polygons,
+        aes(color = factor(Cluster)),
+        fill = NA,
+        linewidth=.5
+      )+
+  scale_color_manual(
+    values = cols,
+    breaks = names(cols),
+    name = "AU"
+  ) +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1)
+  ) +
+  coord_sf(
+    crs = st_crs(lamproj),
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE
+  )
+trends_plot_overlaid
+```
+
+```{r}
+ggsave(plot=trends_plot_overlaid, "../figures_output/trends/BANS_trends_plot_AU_K3_overlay_ggplot_colored_3.png", height=4, width=8)
+
+pdf("../figures_output/trends/BANS_trends_plot_AU_K3_overlay_ggplot_colored_2.pdf", height=4, width=8)
+print(trends_plot_overlaid)
+dev.off()
+```
+
+```{r}
+map_only <- ggplot() +
+  geom_sf(data = ocean, fill = "#bddbe6", color = NA) +
+  geom_sf(data = countries, fill = "lightgray", color = NA) +
+  geom_sf(data = states, fill = "lightgray", color = NA) +
+  geom_sf(data = lakes, fill = "#bddbe6", color = NA) +
+
+  tidyterra::geom_spatraster(data = trends_projected, na.rm = TRUE) +
+  scale_fill_gradient2(
+    low = "#CA4741",
+    mid = "white",
+    high = "#3784BB",
+    midpoint = 0,
+    na.value = NA,
+    name = "Trend"
+  ) +
+
+  geom_sf(data = breeding_na, fill = NA, linewidth = 0.1225, alpha = 0.6) +
+  geom_sf(data = countries, fill = NA, linewidth = 0.25) +
+  geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
+  geom_sf(data = states, fill = NA, linewidth = 0.1225) +
+
+  ggnewscale::new_scale_fill() +
+  ggspatial::layer_spatial(
+    genoscape_polygons,
+    aes(fill = factor(Cluster)),
+    alpha = 0.25
+  ) +
+  scale_fill_manual(
+    values = cols,
+    breaks = names(cols),
+    name = "ESU",
+    na.value = NA
+  ) +
+  coord_sf(
+    crs = st_crs(lamproj),
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.margin = margin(0, 0, 0, 0),
+    panel.background = element_rect(fill = "gray90", color = NA),
+    plot.background = element_rect(fill = "gray90", color = NA)
+  )
+
+ggsave(
+  "../figures_output/trends_map_only.png",
+  map_only,
+  width = 10,
+  height = 6,
+  dpi = 600,
+  bg = NA
+)
+```
+
+## average trend, violin plot
+```{r}
+data <- read.csv("../../04.predictors_of_decline/scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold55.csv")
+
+clean.data <- data %>% filter(!is.na(ESU))
+nrow(clean.data)
+
+clean.data$ESU <- factor(clean.data$ESU)
+
+table(clean.data$ESU)
+
+cols <- readRDS("../colors/AU_grouping_colors_K3.rds")
+
+CU_names_ref <- data.frame(
+  ESU = c("AU1", "AU2", "AU3"),
+  Name = c(
+    "Western",
+    "Eastern",
+    "Northern"
+  )
+)
+
+K <- length(cols)
+
+clean.data <- data %>% filter(!is.na(ESU))
+
+clean.data.names <- left_join(clean.data, CU_names_ref, by="ESU")
+
+data.summary <- clean.data.names %>%
+  group_by(Name) %>%
+  summarise(
+    across(
+      where(is.numeric),
+      list(
+        n = ~sum(!is.na(.)),
+        mean = ~mean(., na.rm = TRUE),
+        sd = ~sd(., na.rm = TRUE),
+        min = ~min(., na.rm = TRUE),
+        median = ~median(., na.rm = TRUE),
+        max = ~max(., na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+
+abd_trend <- ggplot(clean.data.names, aes(x = Name, y = abd_trend, fill = ESU, color = ESU)) +
+  geom_violin(trim = FALSE, alpha = 0.5) +
+  geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.5) +
+  scale_fill_manual(values = cols) +
+  scale_color_manual(values = cols) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_classic() +
+  theme(legend.position = "none")
+
+abd_trend
+ggsave(plot=abd_trend, "../figures_output/trends/updated_abd_trend_AU_K3_violin.png", width = 6, height=3)
+
+pdf("../figures_output/trends/updated_abd_trend_G3_violin_wide.pdf", width = 8, height = 3)
+print(abd_trend)
+dev.off()
+```
+```{r}
+Eastern <- clean.data %>% filter(ESU=="AU2") %>% select(abd_trend)
+```
