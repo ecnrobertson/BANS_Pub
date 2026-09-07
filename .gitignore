@@ -44,6 +44,7 @@ analysis/05.genomic_offset/scratch/pts_G5.rds
 analysis/06.final_figures/figures_output
 analysis/06.final_figures/old_outputs
 analysis/06.final_figures/scratch
+analysis/06.final_figures/adobe_outputs
 
 #07.adaptive_analysis
 analysis/07.adaptive_analysis/figures
