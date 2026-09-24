@@ -262,6 +262,13 @@ cols_AU <- c(
 saveRDS(cols_AU, "../colors/AU_grouping_colors_K3.rds")
 
 cols_AU <- c(
+  "AU1" = "#332288",
+  "AU2" = "#cc6677",
+  "AU3" = "#ddcc77"
+)
+saveRDS(cols_AU, "../colors/AU_grouping_colors_K3_colorblind.rds")
+
+cols_AU <- c(
   "AU1" = "#187795",
   "AU2" = "#FFBF46",
   "AU3" = "#C1839F"
@@ -326,10 +333,10 @@ source("../../03.delineate_ESUs/code/build_genoscape_surfaces.R")
 K <- 3
 Q_tibble <- read.table("../../07.adaptive_analysis/scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e2.run1.admix.3.Q") %>% setNames(paste0("AU", 1:K))
 
-out_plot_genoscape_png <- paste0("BANS_genoscape_adaptive_K3_final.png")
-out_plot_genoscape_pdf <- paste0("BANS_genoscape_adaptive_K3_final.pdf")
+out_plot_genoscape_png <- paste0("BANS_genoscape_adaptive_K3_final_colorblind.png")
+out_plot_genoscape_pdf <- paste0("BANS_genoscape_adaptive_K3_final_colorblind.pdf")
 genoscape_path <- "../figures_output/genoscape_outputs/"
-cols <- readRDS("../colors/AU_grouping_colors_K3.rds")
+cols <- readRDS("../colors/AU_grouping_colors_K3_colorblind.rds")
 
 K <- 4
 Q_tibble <- read.table("../../07.adaptive_analysis/scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e3.run1.admix.4.Q") %>% setNames(paste0("AU", 1:K))
@@ -420,7 +427,7 @@ genoscape <- ggplot() +
   geom_sf(data = coastlines, fill = NA, linewidth = 0.1225) +
   geom_sf(data = states, fill = NA, linewidth = 0.1225) +
   geom_sf(data = ocean, fill = "#bddbe6") +
-  geom_sf(data = lakes, fill = "#bddbe6") + #bddbe6
+  geom_sf(data = lakes, fill = "#bddbe6") +
   #geom_spatial_point(data = long_lat_tibble, mapping = aes(x = Long, y = Lat), size=1, alpha = 0.7) + 
   theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1)) +
   geom_sf(data=cluster_geo_sf,
@@ -450,10 +457,106 @@ genoscape <- ggplot() +
 ############# SAVE THE GENOSCAPE #############
 ggsave(plot=genoscape, path=genoscape_path, filename=out_plot_genoscape_png, width = 7, height = 4.5)
 
-pdf(paste0(genoscape_path,out_plot_genoscape_pdf))
+pdf(paste0(genoscape_path,out_plot_genoscape_pdf), width = 7, height = 4.5)
 print(genoscape)
 dev.off()
+
 ```
+
+```{r}
+genoscape_projected_clean <- genoscape_projected
+
+# identify cells where RGB are NA
+rgb_na <- is.na(genoscape_projected[["red"]]) |
+          is.na(genoscape_projected[["green"]]) |
+          is.na(genoscape_projected[["blue"]])
+
+# make those cells fully transparent
+genoscape_projected_clean[["alpha"]][rgb_na] <- 0
+
+countries_poly <- ne_download(
+  scale = 10,
+  type = "admin_0_countries",
+  category = "cultural",
+  returnclass = "sf"
+)
+
+us_canada <- countries_poly %>%
+  filter(NAME %in% c("United States of America", "Canada", "Mexico")) %>%
+  st_make_valid()
+states_poly <- ne_download(
+  scale = 10,
+  type = "admin_1_states_provinces",
+  category = "cultural",
+  returnclass = "sf"
+)
+hawaii <- states_poly %>%
+  filter(
+    adm0_a3 == "USA",
+    name == "Hawaii"
+  )
+
+us_canada_proj <- st_transform(us_canada, st_crs(lamproj))
+hawaii_proj <- st_transform(hawaii, st_crs(lamproj))
+states_proj <- st_transform(states, st_crs(lamproj))
+
+us_canada_no_hi <- st_difference(
+  us_canada_proj,
+  st_union(st_buffer(hawaii_proj, 5000))
+)
+
+states_us_canada <- st_intersection(states_proj, st_union(us_canada_no_hi))
+
+genoscape_cleaner <- ggplot() +
+   geom_sf(
+    data = us_canada_no_hi,
+    fill = "#F5F7FA",
+    color = "#A1A6AD",
+    linewidth = 0.25
+  ) +
+  geom_sf(
+    data = states_us_canada,
+    fill = NA,
+    color = "#A1A6AD",
+    linewidth = 0.1225
+  ) +
+    ggspatial::layer_spatial(genoscape_projected_clean) +
+  geom_sf(data=cluster_geo_sf,
+          size = 0.5)+
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+)+
+  coord_sf(
+  crs = st_crs(lamproj),
+  expand=F)+
+  geom_label_repel(
+    data = cluster_geo_sf,
+    aes(label = Group_label, geometry = geometry),
+    stat = "sf_coordinates",
+    size = 1.5,            # increase text size (try 2.2–3.0
+    fontface = "bold",
+    label.size = .1,
+    label.padding = unit(0.1, "lines"),
+    label.r=0,
+    fill = "white",
+    alpha = 1,
+    point.padding = 0.1,
+    segment.color = "black",
+    segment.size = 0.25,
+    min.segment.length = 0
+)
+
+############# SAVE THE GENOSCAPE #############
+ggsave(plot=genoscape_cleaner, path=genoscape_path, filename=out_plot_genoscape_png, width = 7, height = 4.5)
+
+pdf(paste0(genoscape_path,out_plot_genoscape_pdf), width = 7, height = 4.5)
+print(genoscape_cleaner)
+dev.off()
+```
+
 
 ## Admixture plots
 ```{r}
@@ -469,10 +572,10 @@ letter_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels_ce
 ######## INPUT #########
 K <- 3
 Q_tibble <- read.table("../../07.adaptive_analysis/scratch/pcadmix_output/BANS.env_only.outliers_list_z3.alpha0.e2.run1.admix.3.Q") %>% setNames(paste0("AU", 1:K))
-out_plot_admix <- "BANS_admix_adaptive_K3.png"
-out_plot_admix_pdf <- "BANS_admix_adaptive_K3.pdf"
-out_group_admix <- "BANS_admix_adaptive_grouping_K3.tsv"
-cols <- readRDS("../colors/AU_grouping_colors_K3.rds")
+out_plot_admix <- "BANS_admix_adaptive_K3_colorblind.png"
+out_plot_admix_pdf <- "BANS_admix_adaptive_K3_colorblind.pdf"
+out_group_admix <- "BANS_admix_adaptive_grouping_K3_colorblind.tsv"
+cols <- readRDS("../colors/AU_grouping_colors_K3_colorblind.rds")
 group_label_order <- c("AK", "YT", "NT", "BC_1", "AB", "SK", "BC_2", "MB_1", "WA", "MT", "WY_1", "WY_2", "ND", "MB_2", "ON", "QC_2", "NS_1", "NB", "NS_2", "QC_1", "PE", "NL")
 length(group_label_order)==22
 
@@ -521,47 +624,33 @@ dev.off()
 ```{r}
 source("../../03.delineate_ESUs/code/plot_pca_admix_solid.R")
 
-out_plot_pca1 <- "../figures_output/pca_plots/BANS_K5_PCA_ESUcoloring.png"
-base_cols_rds <- "../colors/CU_grouping_colors_K5.rds"
+out_plot_pca1 <- "../figures_output/pca_plots/BANS_PCA_AU_K3_colorblind.png"
+base_cols <- "../../06.final_figures/colors/AU_grouping_colors_K3_colorblind.rds"
 
-cols <- readRDS(base_cols_rds)
-cols["No Assignment"] <- "#BDBDBD"
+admix_groups <- data.table::fread("../../07.adaptive_analysis/scratch/admix_output/BANS_admix_grouping_adaptive_G3_2.tsv")
+cols <- readRDS(base_cols)
 
-admix_groups <- data.table::fread("../scratch/admix_output/BANS_admix_grouping_K5.tsv") %>% 
-  mutate(
-    admix_group = tidyr::replace_na(admix_group, "No Assignment")
-  )
-cols <- readRDS(base_cols_rds)
-
-cols["No Assignment"] <- "#BDBDBD"
-
-pca_df <- read.table("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenvec", header = FALSE)
-
+plink_pca <- read.table("../../07.adaptive_analysis/scratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenvec", header = FALSE)
 pops <- readr::read_csv("../../03.delineate_ESUs/scratch/pops.csv", show_col_types = FALSE)
-letter_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels_centroids.RDS")
-
-eigenval <- scan("../../03.delineate_ESUs/scratch/PCA/BANS.filtered.unrel.ld25-10-0.2.eigenval")
+eigenval <- scan("../../07.adaptive_analysisscratch/PCA_eigen/BANS.env_only.outliers_z3_list.eigenval")
 
 solid_out <- plot_pca_admix_solid(
-  plink_pca = pca_df,
+  plink_pca = plink_pca,
   eigenval = eigenval,
   cols = cols,
   pops = pops,
   admix_groups = admix_groups,
-  out_plot = out_plot_pca1
+  out_plot = out_plot_pca1,
 )
 
-library(plotly)
-ggplotly(solid_out$pca_plot)
+solid_out$pca_plot
 ```
 
 ```{r}
 ########## Colors ##########
 geo_key <- readRDS("../../03.delineate_ESUs/scratch/geo_informative_labels.RDS")
-base_cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K3.rds")
-
-out_group_label_cols_rds <- "../figures/pcadmix_AU_3_group_label_colors.rds"
-out_plot <- "../figures/pca_plots/BANS_K3_PCA_AU_coloring.pdf"
+out_group_label_cols_rds <- "../figures_output/pca_plots/pcadmix_AU_3_group_label.rds"
+out_plot <- "../figures_output/pca_plots/BANS_K3_PCA_AU_colorblind.pdf"
 
 admix_groups <- data.table::fread("../../07.adaptive_analysis/scratch/admix_output/BANS_admix_grouping_adaptive_G3_2.tsv")
 
@@ -586,8 +675,8 @@ pops.groups.labels <- pops %>%
     admix_group = replace_na(admix_group, "No Assignment")
   )
 
-
-base_cols["No Assignment"] <- "#BDBDBD"
+cols <- readRDS(base_cols)
+cols["No Assignment"] <- "#BDBDBD"
 
 label_owner <- pops.groups.labels %>%
   filter(!is.na(Group_label)) %>%
@@ -598,13 +687,13 @@ label_owner <- pops.groups.labels %>%
   rename(owner_au = admix_group) %>%
   mutate(owner_au = replace_na(owner_au, "No Assignment"))
 
-missing_cols <- setdiff(unique(label_owner$owner_au), names(base_cols))
+missing_cols <- setdiff(unique(label_owner$owner_au), names(cols))
 
 group_label_cols_df <- label_owner %>%
   arrange(owner_au, Group_label) %>%
   group_by(owner_au) %>%
   group_modify(~{
-    base <- base_cols[[as.character(.y$owner_au)]]
+    base <- cols[[as.character(.y$owner_au)]]
     labels <- .x$Group_label
     
     tibble(

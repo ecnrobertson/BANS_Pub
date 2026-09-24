@@ -36,7 +36,7 @@ nrow(clean.data)
 clean.data$ESU <- factor(clean.data$ESU)
 
 table(clean.data$ESU)
-genoscape_polygons <- st_read("../../03.delineate_ESUs/outputs/BANS_CU_polygons_thresh45_G4.shp")
+genoscape_polygons <- st_read("../../")
 ggplot() +
   ggspatial::layer_spatial(genoscape_polygons, aes(fill = as.factor(Cluster))) +
   theme_void() + 

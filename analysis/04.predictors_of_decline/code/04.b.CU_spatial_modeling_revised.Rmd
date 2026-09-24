@@ -1,0 +1,1247 @@
+---
+title: "04.b.CU_spatial_modeling_revised"
+output: html_document
+---
+
+```{r, message=F}
+library(ggplot2)
+library(tidyverse)
+library(terra)
+library(mgcv)
+library(gratia)
+library(glmnet)
+library(broom)
+library(GGally)
+library(sf)
+library(tibble)
+```
+
+# Introduction
+Here we're exploring how the inclusion of evolutionary information, in the form of AU grouping, improves our modeling. There's a couple steps here:
+1. explore the data to generally look at if trends seems to vary across AUs
+2. try and figure out what the best predictors are, aka what should we include in the model
+3. test different hierarchical GAM models
+
+Using K=3 AU's for this, based on the results of an GEA.
+# Initial Data Stuff
+
+Just doing one of the variables for these, tmax, which I think will be important.
+```{r}
+data <- read.csv("../scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold55.csv") %>% rename(AU=ESU)
+
+#only data where I had a good ESU assignment
+clean.data <- data %>% filter(!is.na(AU))
+nrow(clean.data)
+
+clean.data$AU <- factor(clean.data$AU)
+
+table(clean.data$AU)
+```
+
+```{r}
+AU1 <- clean.data %>% filter(AU=="AU1")
+summary(AU1)
+AU2 <- clean.data %>% filter(AU=="AU2")
+summary(AU2)
+AU3 <- clean.data %>% filter(AU=="AU3")
+summary(AU3)
+```
+
+# Null model
+So this is our null model with just the range wide environmental stuff. The goal here is to get the parameter k to the best value. K in this context is the maximum basis dimension allowed for the GAM smooth. We want to play with the K values until we get a k-index close to 1, a p-value that > 0.5, and a EDF that's not super close to the k value (suggesting we're capping the effective degrees of freedom too low, aka it wants to be wigglier).
+```{r}
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 15, bs="tp") + s(soil_june_delta, k = 15, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 15, bs="tp"), data=clean.data, method="REML")
+
+mgcv::gam.check(gam_null)
+# tmax looks good here but the rest would be better I think
+
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 20, bs="tp") + s(soil_june_delta, k = 20, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 20, bs="tp"), data=clean.data, method="REML")
+
+mgcv::gam.check(gam_null)
+# ppt is better here, doesn't seem constrainted and k-index and p-values are good
+
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 20, bs="tp") + s(soil_june_delta, k = 25, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 25, bs="tp"), data=clean.data, method="REML")
+
+mgcv::gam.check(gam_null)
+
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 20, bs="tp") + s(soil_june_delta, k = 30, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 30, bs="tp"), data=clean.data, method="REML")
+
+mgcv::gam.check(gam_null)
+```
+So, the EDF seems to be stopping instead but soil and Tmin are still not super happy, so lets look at some other stuff.
+
+"Basis dimensions were increased until smooth EDFs were comfortably below their maximum available dimensions. Remaining low k-index values were therefore evaluated as potential residual/model structure rather than evidence for further increasing basis size."
+```{r}
+gam_null <- gam(abd_trend ~ s(ppt_june_delta, k = 20, bs="tp") + s(soil_june_delta, k = 25, bs="tp") + s(tmax_june_delta, k = 15, bs="tp") + s(tmin_june_delta, k = 25, bs="tp"), data=clean.data, method="REML")
+concurvity(gam_null, full = TRUE)
+```
+Concurvity is tackling multicollinearity, which it's reasonable to think there will be give that these are all environmental variables. Above 0.7 is the threshold we're worried about it. Observed and estimate are probably the most useful things here. No shocker, the Tmin and Tmax are showing the higher values here. Let's play around with removing one of these variables at a time...
+```{r}
+gam_no_tmax <- gam(
+  abd_trend ~
+    s(ppt_june_delta,  k = 20, bs = "tp") +
+    s(soil_june_delta, k = 25, bs = "tp") +
+    s(tmin_june_delta, k = 25, bs = "tp"),
+  data = clean.data,
+  method = "REML"
+)
+
+gam_no_tmin <- gam(
+  abd_trend ~
+    s(ppt_june_delta,  k = 20, bs = "tp") +
+    s(soil_june_delta, k = 25, bs = "tp") +
+    s(tmax_june_delta, k = 15, bs = "tp"),
+  data = clean.data,
+  method = "REML"
+)
+
+AIC(gam_null, gam_no_tmax, gam_no_tmin)
+
+summary(gam_null)$dev.expl
+summary(gam_no_tmax)$dev.expl
+summary(gam_no_tmin)$dev.expl
+```
+So, keeping the terms does keep the model stronger, which suggests we don't really need to drop a variable just be a little cautious about interpreting the temperature variables independently of the rest.
+
+```{r}
+draw(gam_null)
+
+draw(gam_null, residuals = TRUE)
+```
+
+Worried about spatial autocorrelation...
+```{r}
+library(sf)
+library(spdep)
+pts <- st_as_sf(
+  clean.data,
+  coords = c("x", "y"),
+  crs = 4326
+)
+
+# better to work in a projected CRS for distance-based neighbors
+pts_proj <- st_transform(pts, 5070)  # Albers Equal Area for CONUS
+
+coords <- st_coordinates(pts_proj)
+
+# e.g. neighbors within ~40 km
+nb <- dnearneigh(coords, d1 = 0, d2 = 40000)
+
+lw <- nb2listw(nb, style = "W", zero.policy = TRUE)
+
+moran.test(
+  residuals(gam_null),
+  lw,
+  zero.policy = TRUE
+)
+```
+
+Whoops, super high. Let's try adding spatial stuff to the model.
+```{r}
+# gam_spatial <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta,  k = 20, bs = "tp") +
+#     s(soil_june_delta, k = 25, bs = "tp") +
+#     s(tmax_june_delta, k = 15, bs = "tp") +
+#     s(tmin_june_delta, k = 25, bs = "tp") +
+#     s(x, y, k = 100, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(gam_spatial, "../scratch/model_storage/gam_spatial")
+gam_spatial <- readRDS("../scratch/model_storage/gam_spatial")
+
+summary(gam_spatial)
+gam.check(gam_spatial)
+
+spdep::moran.test(
+  residuals(gam_spatial),
+  lw,
+  zero.policy = TRUE
+)
+```
+
+So, the spatial variables are super important but we retain the climate variables too, which is good. Deviance explained shoots up a ton, which makes sense. The k value for x.y is way too low, so gotta crank that up. Let's see how much spatial autocorrelation is left though. Also, looks like I might end up wanting to drop soil, it basically fell away as important.
+```{r}
+# gam_spatial2 <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta,  k = 20, bs = "tp") +
+#     s(soil_june_delta, k = 25, bs = "tp") +
+#     s(tmax_june_delta, k = 15, bs = "tp") +
+#     s(tmin_june_delta, k = 25, bs = "tp") +
+#     s(x, y, k = 300, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+# 
+# saveRDS(gam_spatial2, "../scratch/model_storage/gam_spatial2")
+gam_spatial2 <- readRDS("../scratch/model_storage/gam_spatial2")
+
+summary(gam_spatial2)
+gam.check(gam_spatial2)
+spdep::moran.test(
+  residuals(gam_spatial2),
+  lw,
+  zero.policy = TRUE
+)
+```
+So far:
+No spatial term:     Moran's I = 0.754
+Spatial k = 100:     Moran's I = 0.416
+Spatial k = 300:     Moran's I = 0.207
+
+Getting better.... still needs more space... also soil is still not relevant. Let's crank K for x.y. Also noting that tmin is being funky, but when plotting the spatial versus spatial 2, the tmin gains complexity that I think is actually useful for interpretation. I don't think I'm reasonably going to get to a K where x.y is totally happy, but if I can find a spot where the other k's are stablizing in their complexity that might suggest that i'm doing a good enough job of accounting for spatial complexity in that the variables i'm more interested in can shine through. There's also certainly a computation limit here where raising the k for x.y makes this run wayyyy slower.
+
+```{r}
+# gam_spatial3 <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta,  k = 20, bs = "tp") +
+#     s(soil_june_delta, k = 25, bs = "tp") +
+#     s(tmax_june_delta, k = 15, bs = "tp") +
+#     s(tmin_june_delta, k = 25, bs = "tp") +
+#     s(x, y, k = 500, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+# 
+# saveRDS(gam_spatial3, "../scratch/model_storage/gam_spatial3")
+gam_spatial3 <- readRDS("../scratch/model_storage/gam_spatial3")
+
+summary(gam_spatial3)
+gam.check(gam_spatial3)
+
+spdep::moran.test(
+  residuals(gam_spatial3),
+  lw,
+  zero.policy = TRUE
+)
+```
+
+Love, much better.
+No spatial term     Moran's I = 0.754
+spatial k = 100     Moran's I = 0.416
+spatial k = 300     Moran's I = 0.238 
+spatial k = 500     Moran's I = 0.136
+
+                 spatial k=100 spatial k=300    spatial k=500
+ppt EDF             10.04           4.64             1.00           So, when spatial is better accounted for this effect goes away
+soil EDF            1.00            1.00             1.00           So, when spatial is better accounted for this effect goes away
+tmax EDF            10.69           10.65            9.43           The complexity for this goes down but not dramatically, relatively stable
+tmin EDF            4.79            17.98            18.14          This is cool, goes up a lot then stabilizes to a biologically useful curve
+
+                   df      AIC
+gam_spatial  126.8939 30369.94
+gam_spatial2 304.0385 29060.64
+gam_spatial3 449.4031 28391.35
+
+## spatial auto checks
+So, let's see if we can keep the K low so it doesn't absorb the effect of the climate so much without building a terrible model.
+```{r}
+k_vals <- c(50, 100, 200, 300, 400, 500)
+
+# gam_k_models <- setNames(
+#   lapply(k_vals, function(k_space) {
+# 
+#     gam(
+#       abd_trend ~
+#         s(tmax_june_delta, k = 15, bs = "tp") +
+#         s(tmin_june_delta, k = 25, bs = "tp") +
+#         s(x, y, k = k_space, bs = "tp"),
+#       data = clean.data,
+#       method = "REML"
+#     )
+# 
+#   }),
+#   paste0("k", k_vals)
+# )
+
+# saveRDS(gam_k_models, "../scratch/model_storage/gam_k_models")
+gam_k_models <- readRDS("../scratch/model_storage/gam_k_models")
+
+model_summary <- map_dfr(
+  names(gam_k_models),
+  function(nm) {
+
+    mod <- gam_k_models[[nm]]
+    sm  <- summary(mod)
+
+    tibble(
+      model = nm,
+      spatial_k = as.numeric(sub("k", "", nm)),
+      AIC = AIC(mod),
+      logLik = as.numeric(logLik(mod)),
+      df = attr(logLik(mod), "df"),
+      deviance_explained = sm$dev.expl,
+      adjusted_r2 = sm$r.sq
+    )
+  }
+)
+
+model_summary
+
+edf_summary <- map_dfr(
+  names(gam_k_models),
+  function(nm) {
+
+    mod <- gam_k_models[[nm]]
+    s <- summary(mod)$s.table
+
+    tibble(
+      model = nm,
+      spatial_k = as.numeric(sub("k", "", nm)),
+      term = rownames(s),
+      edf = s[, "edf"],
+      ref_df = s[, "Ref.df"],
+      p_value = s[, ncol(s)]
+    )
+  }
+)
+
+edf_summary
+
+concurvity_summary <- map_dfr(
+  names(gam_k_models),
+  function(nm) {
+
+    mod <- gam_k_models[[nm]]
+
+    cc <- concurvity(mod, full = TRUE)
+
+    tibble(
+      model = nm,
+      spatial_k = as.numeric(sub("k", "", nm)),
+
+      tmax_observed =
+        cc["observed", "s(tmax_june_delta)"],
+
+      tmin_observed =
+        cc["observed", "s(tmin_june_delta)"],
+
+      space_observed =
+        cc["observed", "s(x,y)"],
+
+      tmax_estimate =
+        cc["estimate", "s(tmax_june_delta)"],
+
+      tmin_estimate =
+        cc["estimate", "s(tmin_june_delta)"],
+
+      space_estimate =
+        cc["estimate", "s(x,y)"]
+    )
+  }
+)
+
+concurvity_summary
+
+pairwise_concurvity <- lapply(
+  gam_k_models,
+  concurvity,
+  full = FALSE
+)
+
+kcheck_summary <- map_dfr(
+  names(gam_k_models),
+  function(nm) {
+
+    mod <- gam_k_models[[nm]]
+
+    kc <- k.check(mod)
+
+    as.data.frame(kc) %>%
+      rownames_to_column("term") %>%
+      mutate(
+        model = nm,
+        spatial_k = as.numeric(sub("k", "", nm))
+      ) %>%
+      select(
+        model,
+        spatial_k,
+        term,
+        everything()
+      )
+  }
+)
+
+kcheck_summary
+```
+
+```{r}
+# gam_nospatial <- gam(
+#   abd_trend ~
+#     s(tmax_june_delta, k = 15, bs = "tp") +
+#     s(tmin_june_delta, k = 25, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+#saveRDS(gam_nospatial, "../scratch/model_storage/gam_nospatial")
+gam_nospatial <- readRDS("../scratch/model_storage/gam_nospatial")
+
+get_curve <- function(mod, model_name, focal_var, data, n = 200) {
+
+  xseq <- seq(
+    min(data[[focal_var]], na.rm = TRUE),
+    max(data[[focal_var]], na.rm = TRUE),
+    length.out = n
+  )
+
+  newdat <- data.frame(
+    tmax_june_delta = median(data$tmax_june_delta, na.rm = TRUE),
+    tmin_june_delta = median(data$tmin_june_delta, na.rm = TRUE),
+    x = median(data$x, na.rm = TRUE),
+    y = median(data$y, na.rm = TRUE)
+  )
+
+  newdat <- newdat[rep(1, n), ]
+  newdat[[focal_var]] <- xseq
+
+  pred <- predict(
+    mod,
+    newdata = newdat,
+    se.fit = TRUE,
+    type = "response"
+  )
+
+  tibble(
+    model = model_name,
+
+    spatial_k = ifelse(
+      model_name == "none",
+      0,
+      as.numeric(sub("k", "", model_name))
+    ),
+
+    focal_var = focal_var,
+    climate_value = xseq,
+    fit = as.numeric(pred$fit),
+    se = as.numeric(pred$se.fit),
+    lower = fit - 1.96 * se,
+    upper = fit + 1.96 * se
+  )
+}
+
+all_models <- c(
+  list(none = gam_nospatial),
+  gam_k_models
+)
+
+curve_data <- map_dfr(
+  names(all_models),
+  function(nm) {
+
+    mod <- all_models[[nm]]
+
+    bind_rows(
+      get_curve(
+        mod,
+        model_name = nm,
+        focal_var = "tmax_june_delta",
+        data = clean.data
+      ),
+      get_curve(
+        mod,
+        model_name = nm,
+        focal_var = "tmin_june_delta",
+        data = clean.data
+      )
+    )
+  }
+)
+
+curve_data %>%
+  filter(focal_var == "tmax_june_delta") %>%
+  ggplot(
+    aes(
+      x = climate_value,
+      y = fit,
+      group = factor(spatial_k),
+      linetype = factor(spatial_k)
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  theme_classic() +
+  labs(
+    x = "Change in June Tmax",
+    y = "Predicted abundance trend",
+    linetype = "Spatial k",
+    title = "Tmax response across spatial smooth complexity"
+  )
+
+curve_data %>%
+  filter(focal_var == "tmin_june_delta") %>%
+  ggplot(
+    aes(
+      x = climate_value,
+      y = fit,
+      group = factor(spatial_k),
+      linetype = factor(spatial_k)
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  theme_classic() +
+  labs(
+    x = "Change in June Tmin",
+    y = "Predicted abundance trend",
+    linetype = "Spatial k",
+    title = "Tmin response across spatial smooth complexity"
+  )
+```
+
+
+```{r}
+curve_data %>%
+  filter(focal_var == "tmax_june_delta") %>%
+  ggplot(
+    aes(
+      x = climate_value,
+      y = fit
+    )
+  ) +
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper
+    ),
+    alpha = 0.2
+  ) +
+  geom_line(linewidth = 0.8) +
+  facet_wrap(~ spatial_k, ncol = 3) +
+  theme_classic() +
+  labs(
+    x = "Change in June Tmax",
+    y = "Predicted abundance trend",
+    title = "Tmax response by spatial k"
+  )
+
+curve_data %>%
+  filter(focal_var == "tmin_june_delta") %>%
+  ggplot(
+    aes(
+      x = climate_value,
+      y = fit
+    )
+  ) +
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper
+    ),
+    alpha = 0.2
+  ) +
+  geom_line(linewidth = 0.8) +
+  facet_wrap(~ spatial_k, ncol = 3) +
+  theme_classic() +
+  labs(
+    x = "Change in June Tmin",
+    y = "Predicted abundance trend",
+    title = "Tmin response by spatial k"
+  )
+```
+
+```{r}
+get_smooth_curve <- function(mod, model_name, focal_var, data, n = 200) {
+
+  xseq <- seq(
+    min(data[[focal_var]], na.rm = TRUE),
+    max(data[[focal_var]], na.rm = TRUE),
+    length.out = n
+  )
+
+  newdat <- data.frame(
+    tmax_june_delta = median(data$tmax_june_delta, na.rm = TRUE),
+    tmin_june_delta = median(data$tmin_june_delta, na.rm = TRUE),
+    x = median(data$x, na.rm = TRUE),
+    y = median(data$y, na.rm = TRUE)
+  )
+
+  newdat <- newdat[rep(1, n), ]
+  newdat[[focal_var]] <- xseq
+
+  term_name <- paste0("s(", focal_var, ")")
+
+  pred <- predict(
+    mod,
+    newdata = newdat,
+    type = "terms",
+    se.fit = TRUE
+  )
+
+  tibble(
+    model = model_name,
+    spatial_k = as.numeric(sub("k", "", model_name)),
+    focal_var = focal_var,
+    climate_value = xseq,
+    fit = pred$fit[, term_name],
+    se = pred$se.fit[, term_name],
+    lower = fit - 1.96 * se,
+    upper = fit + 1.96 * se
+  )
+}
+
+smooth_curve_data <- map_dfr(
+  names(gam_k_models),
+  function(nm) {
+
+    mod <- gam_k_models[[nm]]
+
+    bind_rows(
+      get_smooth_curve(
+        mod, nm,
+        "tmax_june_delta",
+        clean.data
+      ),
+      get_smooth_curve(
+        mod, nm,
+        "tmin_june_delta",
+        clean.data
+      )
+    )
+  }
+)
+
+smooth_curve_data %>%
+  ggplot(
+    aes(
+      x = climate_value,
+      y = fit,
+      linetype = factor(spatial_k),
+      group = spatial_k
+    )
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line(linewidth = 1) +
+  facet_wrap(
+    ~ focal_var,
+    scales = "free_x"
+  ) +
+  theme_classic() +
+  labs(
+    x = "Climate change",
+    y = "Partial smooth effect",
+    linetype = "Spatial k"
+  )
+```
+```{r}
+pairwise_concurvity[["k100"]]
+pairwise_concurvity[["k200"]]
+
+cor(
+  clean.data$tmax_june_delta,
+  clean.data$tmin_june_delta,
+  use = "complete.obs"
+)
+```
+
+At k = 100, the observed pairwise concurvity is roughly:
+
+Tmax explained by Tmin: 0.68
+Tmin explained by Tmax: 0.44
+Tmax explained by space: 0.23
+Tmin explained by space: 0.11
+space explained by Tmax: 0.85
+space explained by Tmin: 0.89
+
+The spatial smooth contains a lot of structure that can be reconstructed from the temperature variables, but the fitted temperature smooths themselves are not overwhelmingly reconstructed by the spatial smooth in the observed metric.
+
+At k = 200, the same pattern holds:
+
+Tmax from space: ~0.23
+Tmin from space: ~0.10
+space from Tmax: ~0.92
+space from Tmin: ~0.94
+
+So increasing spatial complexity makes the spatial surface increasingly climate-like, but it does not greatly increase the amount of the fitted Tmax/Tmin smooths that is represented by space.
+
+"We evaluated spatial smooth basis dimensions from k = 50 to k = 500. Increasing k progressively reduced residual spatial autocorrelation and improved model fit, but the estimated environmental response curves converged by approximately k = 200. We therefore used k = 200 for the spatial smooth in subsequent models as a balance between adequately representing residual spatial structure and computational efficiency."
+
+But, Tmax and Tmin are highly correlated and so cannot be interpretted as having separate effects. The Pearson r=0.83 is high and would usually warrant exclusion of one of the variables... Let's see what happens modeling them seperataly...
+```{r}
+gam_tmax_k100 <- gam(
+  abd_trend ~
+    s(tmax_june_delta, k = 15, bs = "tp") +
+    s(x, y, k = 100, bs = "tp"),
+  data = clean.data,
+  method = "REML"
+)
+
+gam_tmin_k100 <- gam(
+  abd_trend ~
+    s(tmin_june_delta, k = 25, bs = "tp") +
+    s(x, y, k = 100, bs = "tp"),
+  data = clean.data,
+  method = "REML"
+)
+
+gam_joint_k100 <- gam_k_models[["k100"]]
+
+tmax_compare <- bind_rows(
+  get_curve(
+    gam_joint_k100,
+    model_name = "Joint Tmax + Tmin",
+    focal_var = "tmax_june_delta",
+    data = clean.data
+  ),
+  get_curve(
+    gam_tmax_k100,
+    model_name = "Tmax only",
+    focal_var = "tmax_june_delta",
+    data = clean.data
+  )
+)
+
+tmin_compare <- bind_rows(
+  get_curve(
+    gam_joint_k100,
+    model_name = "Joint Tmax + Tmin",
+    focal_var = "tmin_june_delta",
+    data = clean.data
+  ),
+  get_curve(
+    gam_tmin_k100,
+    model_name = "Tmin only",
+    focal_var = "tmin_june_delta",
+    data = clean.data
+  )
+)
+
+library(patchwork)
+
+p_tmax <- ggplot(
+  tmax_compare,
+  aes(
+    x = climate_value,
+    y = fit,
+    linetype = model,
+    group = model
+  )
+) +
+  geom_line(linewidth = 1) +
+  theme_classic() +
+  labs(
+    x = "Change in June Tmax",
+    y = "Predicted abundance trend",
+    linetype = NULL,
+    title = "Tmax"
+  )
+
+p_tmin <- ggplot(
+  tmin_compare,
+  aes(
+    x = climate_value,
+    y = fit,
+    linetype = model,
+    group = model
+  )
+) +
+  geom_line(linewidth = 1) +
+  theme_classic() +
+  labs(
+    x = "Change in June Tmin",
+    y = "Predicted abundance trend",
+    linetype = NULL,
+    title = "Tmin"
+  )
+
+p_tmax + p_tmin +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+```
+
+```{r}
+ggplot(
+  tmax_compare,
+  aes(
+    x = climate_value,
+    y = fit,
+    group = model,
+    linetype = model
+  )
+) +
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper,
+      fill = model
+    ),
+    alpha = 0.12,
+    linetype = 0
+  ) +
+  geom_line(linewidth = 1) +
+  geom_rug(
+    data = clean.data,
+    aes(x = tmax_june_delta),
+    inherit.aes = FALSE,
+    sides = "b",
+    alpha = 0.2
+  ) +
+  theme_classic() +
+  labs(
+    x = "Change in June Tmax",
+    y = "Predicted abundance trend",
+    linetype = NULL,
+    fill = NULL,
+    title = "Tmax: joint vs single-predictor model"
+  )
+
+ggplot(
+  tmin_compare,
+  aes(
+    x = climate_value,
+    y = fit,
+    group = model,
+    linetype = model
+  )
+) +
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper,
+      fill = model
+    ),
+    alpha = 0.12,
+    linetype = 0
+  ) +
+  geom_line(linewidth = 1) +
+  geom_rug(
+    data = clean.data,
+    aes(x = tmin_june_delta),
+    inherit.aes = FALSE,
+    sides = "b",
+    alpha = 0.2
+  ) +
+  theme_classic() +
+  labs(
+    x = "Change in June Tmin",
+    y = "Predicted abundance trend",
+    linetype = NULL,
+    fill = NULL,
+    title = "Tmin: joint vs single-predictor model"
+  )
+```
+
+## Final Null Models
+
+```{r}
+null_tmax <- gam(
+  abd_trend ~
+    s(ppt_june_delta,  k = 20, bs = "tp") +
+    s(tmax_june_delta, k = 15, bs = "tp") +
+    s(x, y, k = 200, bs = "tp"),
+  data = clean.data,
+  method = "REML"
+)
+
+summary(null_tmax)
+gam.check(null_tmax)
+concurvity(null_tmax, full = TRUE)
+concurvity(null_tmax, full = FALSE)
+gratia::draw(null_tmax)
+```
+
+```{r}
+null_tmin <- gam(
+  abd_trend ~
+    s(ppt_june_delta,  k = 20, bs = "tp") +
+    s(tmin_june_delta, k = 25, bs = "tp") +
+    s(x, y, k = 200, bs = "tp"),
+  data = clean.data,
+  method = "REML"
+)
+
+summary(null_tmin)
+gam.check(null_tmin)
+concurvity(null_tmin, full = TRUE)
+concurvity(null_tmin, full = FALSE)
+gratia::draw(null_tmin)
+```
+
+# G model
+
+Tests whether AUs differ in overall abundance trend while AUs share the same climate-response curve within each alternative temperature model.
+
+```{r}
+# modG.ppt_tmax <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta, k = 20, bs = "tp") +
+#     s(tmax_june_delta, k = 15, bs = "tp") +
+#     s(x, y, k = 200, bs = "tp") +
+#     s(AU, bs = "re"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(modG.ppt_tmax, "../scratch/model_storage/modG.ppt_tmax")
+modG.ppt_tmax <- readRDS("../scratch/model_storage/modG.ppt_tmax")
+
+summary(modG.ppt_tmax)
+gam.check(modG.ppt_tmax)
+concurvity(modG.ppt_tmax, full = TRUE)
+concurvity(modG.ppt_tmax, full = FALSE)
+gratia::draw(modG.ppt_tmax)
+```
+
+```{r}
+# modG.ppt_tmin <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta, k = 20, bs = "tp") +
+#     s(tmin_june_delta, k = 25, bs = "tp") +
+#     s(x, y, k = 200, bs = "tp") +
+#     s(AU, bs = "re"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(modG.ppt_tmin, "../scratch/model_storage/modG.ppt_tmin")
+modG.ppt_tmin <- readRDS("../scratch/model_storage/modG.ppt_tmin")
+
+summary(modG.ppt_tmin)
+gam.check(modG.ppt_tmin)
+concurvity(modG.ppt_tmin, full = TRUE)
+concurvity(modG.ppt_tmin, full = FALSE)
+gratia::draw(modG.ppt_tmin)
+```
+
+## Model comparison
+Switching the ML from REML just for the AIC comparison as this is recommended in the mgcv's documentation.
+```{r}
+# G_models <- list(
+#   Tmax = update(modG.ppt_tmax, method = "ML"),
+#   Tmin = update(modG.ppt_tmin, method = "ML")
+# )
+# 
+# saveRDS(G_models, "../scratch/model_storage/G_models_ML")
+G_models <- readRDS("../scratch/model_storage/G_models_ML")
+
+G_aic <- data.frame()
+
+for(i in seq_along(G_models)) {
+
+  mod <- G_models[[i]]
+  ll <- logLik(mod)
+
+  G_aic <- rbind(
+    G_aic,
+    data.frame(
+      model = names(G_models)[i],
+      logLik = as.numeric(ll),
+      df = attr(ll, "df"),
+      AIC = AIC(mod)
+    )
+  )
+}
+
+G_aic$delta_AIC <- G_aic$AIC - min(G_aic$AIC)
+
+G_aic
+```
+# GS Model
+These test whether the environmental response differs among AUs in addition to a shared global environmental response. The bs = "sz" factor smooths represent AU-specific deviations from the global smooth.
+
+The logic is then:
+
+s(focal) = shared range-wide environmental response
+s(focal, AU, bs="sz") = AU-specific departures from that shared response
+s(AU, bs="re") = AU differences in overall mean trend
+s(x,y) = broad spatial adjustment
+nonfocal climate smooth = adjustment for the other retained climate dimension
+
+## Tmax hypothesis
+Does the Tmax–trend relationship vary among AUs?
+```{r}
+# modGS.tmax <- gam(
+#   abd_trend ~ 
+#     s(ppt_june_delta,  k = 20, bs = "tp") +
+#     s(tmax_june_delta, k = 15, bs = "tp") +
+#     s(tmax_june_delta, AU, k = 5, bs = "sz") +
+#     s(x, y, k = 200, bs = "tp") +
+#     s(AU, bs = "re"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(modGS.tmax, "../scratch/model_storage/modGS.tmax")
+modGS.tmax <- readRDS("../scratch/model_storage/modGS.tmax")
+
+summary(modGS.tmax)
+gam.check(modGS.tmax)
+concurvity(modGS.tmax, full = TRUE)
+concurvity(modGS.tmax, full = FALSE)
+gratia::draw(modGS.tmax)
+```
+
+## Tmin hypothesis
+Does the Tmin–trend relationship vary among AUs?
+```{r}
+# modGS.tmin <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta,  k = 20, bs = "tp") +
+#     s(tmin_june_delta, k = 25, bs = "tp") +
+#     s(tmin_june_delta, AU, k = 5, bs = "sz") +
+#     s(x, y, k = 200, bs = "tp") +
+#     s(AU, bs = "re"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(modGS.tmin, "../scratch/model_storage/modGS.tmin")
+modGS.tmin <- readRDS("../scratch/model_storage/modGS.tmin")
+
+summary(modGS.tmin)
+gam.check(modGS.tmin)
+concurvity(modGS.tmin, full = TRUE)
+concurvity(modGS.tmin, full = FALSE)
+gratia::draw(modGS.tmin)
+```
+
+## PPT
+```{r}
+# modGS.ppt_tmax <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta, k = 20, bs = "tp") +
+#     s(ppt_june_delta, AU, k = 5, bs = "sz") +
+#     s(tmax_june_delta, k = 15, bs = "tp") +
+#     s(AU, bs = "re") +
+#     s(x, y, k = 200, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(modGS.ppt_tmax, "../scratch/model_storage/modGS.ppt_tmax")
+modGS.ppt_tmax <- readRDS("../scratch/model_storage/modGS.ppt_tmax")
+
+summary(modGS.ppt_tmax)
+gam.check(modGS.ppt_tmax)
+concurvity(modGS.ppt_tmax, full = TRUE)
+concurvity(modGS.ppt_tmax, full = FALSE)
+gratia::draw(modGS.ppt_tmax)
+
+# modGS.ppt_tmin <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta, k = 20, bs = "tp") +
+#     s(ppt_june_delta, AU, k = 5, bs = "sz") +
+#     s(tmin_june_delta, k = 25, bs = "tp") +
+#     s(AU, bs = "re") +
+#     s(x, y, k = 200, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(modGS.ppt_tmin, "../scratch/model_storage/modGS.ppt_tmin")
+modGS.ppt_tmin <- readRDS("../scratch/model_storage/modGS.ppt_tmin")
+
+summary(modGS.ppt_tmin)
+gam.check(modGS.ppt_tmin)
+concurvity(modGS.ppt_tmin, full = TRUE)
+concurvity(modGS.ppt_tmin, full = FALSE)
+gratia::draw(modGS.ppt_tmin)
+```
+
+## model comparison
+```{r}
+# GS_models <- list(
+#   Tmax = update(modGS.tmax, method = "ML"),
+#   Tmin = update(modGS.tmin, method = "ML"),
+#   PPT_Tmax = update(modGS.ppt_tmax, method="ML"),
+#   PPT_Tmin = update (modGS.ppt_tmin, method="ML")
+# )
+# 
+# saveRDS(GS_models, "../scratch/model_storage/GS_models_ML")
+GS_models <- readRDS("../scratch/model_storage/GS_models_ML")
+
+GS_aic <- data.frame()
+
+for(i in seq_along(GS_models)) {
+
+  mod <- GS_models[[i]]
+  ll <- logLik(mod)
+
+  GS_aic <- rbind(
+    GS_aic,
+    data.frame(
+      model = names(GS_models)[i],
+      logLik = as.numeric(ll),
+      df = attr(ll, "df"),
+      AIC = AIC(mod)
+    )
+  )
+}
+
+GS_aic$delta_AIC <- GS_aic$AIC - min(GS_aic$AIC)
+
+GS_aic
+```
+
+# S Model
+These remove the global smooth for the focal environmental variable and estimate only AU-specific response curves.
+
+## Tmax hypothesis
+Can the Tmax response be represented entirely by AU-specific smooths, without a shared global Tmax response?
+```{r}
+# modS.tmax <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta, k = 20, bs = "tp") +
+#     s(tmax_june_delta, AU, k = 5, bs = "fs", m = 2) +
+#     s(x, y, k = 200, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(modS.tmax, "../scratch/model_storage/modS.tmax")
+modS.tmax <- readRDS("../scratch/model_storage/modS.tmax")
+
+summary(modS.tmax)
+gam.check(modS.tmax)
+concurvity(modS.tmax, full = TRUE)
+concurvity(modS.tmax, full = FALSE)
+gratia::draw(modS.tmax)
+```
+
+## Tmin hypothesis
+Can the Tmin response be represented entirely by AU-specific smooths, without a shared global Tmin response?
+```{r}
+# modS.tmin <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta, k = 20, bs = "tp") +
+#     s(tmin_june_delta, AU, k = 5, bs = "fs", m = 2) +
+#     s(x, y, k = 200, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(modS.tmin, "../scratch/model_storage/modS.tmin")
+modS.tmin <- readRDS("../scratch/model_storage/modS.tmin")
+
+summary(modS.tmin)
+gam.check(modS.tmin)
+concurvity(modS.tmin, full = TRUE)
+concurvity(modS.tmin, full = FALSE)
+gratia::draw(modS.tmin)
+```
+
+## PPT
+```{r}
+# modS.ppt_tmax <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta, AU, k = 5, bs = "fs", m = 2) +
+#     s(tmax_june_delta, k = 15, bs = "tp") +
+#     s(x, y, k = 200, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+
+# saveRDS(modS.ppt_tmax, "../scratch/model_storage/modS.ppt_tmax")
+modS.ppt_tmax <- readRDS("../scratch/model_storage/modS.ppt_tmax")
+
+summary(modS.ppt_tmax)
+gam.check(modS.ppt_tmax)
+concurvity(modS.ppt_tmax, full = TRUE)
+concurvity(modS.ppt_tmax, full = FALSE)
+gratia::draw(modS.ppt_tmax)
+
+# modS.ppt_tmin <- gam(
+#   abd_trend ~
+#     s(ppt_june_delta, AU, k = 5, bs = "fs", m = 2) +
+#     s(tmin_june_delta, k = 25, bs = "tp") +
+#     s(x, y, k = 200, bs = "tp"),
+#   data = clean.data,
+#   method = "REML"
+# )
+# 
+# saveRDS(modS.ppt_tmin, "../scratch/model_storage/modS.ppt_tmin")
+modS.ppt_tmin <- readRDS("../scratch/model_storage/modS.ppt_tmin")
+
+summary(modS.ppt_tmin)
+gam.check(modS.ppt_tmin)
+concurvity(modS.ppt_tmin, full = TRUE)
+concurvity(modS.ppt_tmin, full = FALSE)
+gratia::draw(modS.ppt_tmin)
+```
+
+## model comparison
+```{r}
+# S_models <- list(
+#   Tmax = update(modS.tmax, method = "ML"),
+#   Tmin = update(modS.tmin, method = "ML"),
+#   PPT_Tmax = update(modS.ppt_tmax, method="ML"),
+#   PPT_Tmin = update(modS.ppt_tmin, method="ML")
+# )
+# 
+# saveRDS(S_models, "../scratch/model_storage/S_models_ML")
+S_models <- readRDS("../scratch/model_storage/S_models_ML")
+
+S_aic <- data.frame()
+
+for(i in seq_along(S_models)) {
+
+  mod <- S_models[[i]]
+  ll <- logLik(mod)
+
+  S_aic <- rbind(
+    S_aic,
+    data.frame(
+      model = names(S_models)[i],
+      logLik = as.numeric(ll),
+      df = attr(ll, "df"),
+      AIC = AIC(mod)
+    )
+  )
+}
+
+S_aic$delta_AIC <- S_aic$AIC - min(S_aic$AIC)
+
+S_aic
+```
+
+# big comparison table
+```{r}
+# G
+G_aic$comparison <- "Temperature"
+G_aic$delta_AIC <- G_aic$AIC - min(G_aic$AIC)
+
+
+# GS
+GS_aic$comparison <- c(
+  "Temperature",
+  "Temperature",
+  "PPT",
+  "PPT"
+)
+
+GS_aic <- GS_aic %>%
+  group_by(comparison) %>%
+  mutate(delta_AIC = AIC - min(AIC)) %>%
+  ungroup()
+
+
+# S
+S_aic$comparison <- c(
+  "Temperature",
+  "Temperature",
+  "PPT",
+  "PPT"
+)
+
+S_aic <- S_aic %>%
+  group_by(comparison) %>%
+  mutate(delta_AIC = AIC - min(AIC)) %>%
+  ungroup()
+
+aic_table <- bind_rows(
+  G_aic %>% mutate(model_form = "G"),
+  GS_aic %>% mutate(model_form = "GS"),
+  S_aic %>% mutate(model_form = "S")
+) %>%
+  select(
+    model_form,
+    comparison,
+    model,
+    df,
+    logLik,
+    AIC,
+    delta_AIC
+  )
+
+aic_table
+```

@@ -1,0 +1,1457 @@
+---
+title: "04.c.CU_prediction_curves"
+output: html_document
+---
+
+```{r, message=F}
+library(ggplot2)
+library(tidyverse)
+library(terra)
+library(mgcv)
+library(gratia)
+library(glmnet)
+library(broom)
+library(GGally)
+library(sf)
+library(tibble)
+```
+
+# set up
+```{r}
+# LIBRARIES
+library(tidyverse)
+library(mgcv)
+library(gratia)
+library(patchwork)
+
+# DATA
+data <- read.csv(
+  "../scratch/spatial_predictors/spatial_predictor_data_xy_from_AU_K3_threshold55.csv"
+) %>%
+  rename(AU = ESU)
+
+clean.data <- data %>%
+  filter(!is.na(AU))
+
+clean.data$AU <- factor(clean.data$AU)
+
+table(clean.data$AU)
+
+# AU NAMES
+AU_names <- c(
+  "AU1" = "Western",
+  "AU2" = "Eastern",
+  "AU3" = "Northern"
+)
+
+# COLORS
+cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K3.rds")
+
+# Check that names line up
+levels(clean.data$AU)
+cols
+
+names(cols) <- AU_names[names(cols)]
+cols
+```
+
+# models
+```{r}
+# G models
+modG.ppt_tmax <- readRDS("../scratch/model_storage/modG.ppt_tmax")
+modG.ppt_tmin <- readRDS("../scratch/model_storage/modG.ppt_tmin")
+
+# GS models
+modGS.tmax <- readRDS("../scratch/model_storage/modGS.tmax")
+modGS.tmin <- readRDS("../scratch/model_storage/modGS.tmin")
+
+modGS.ppt_tmax <- readRDS("../scratch/model_storage/modGS.ppt_tmax")
+modGS.ppt_tmin <- readRDS("../scratch/model_storage/modGS.ppt_tmin")
+
+# S models
+modS.tmax <- readRDS("../scratch/model_storage/modS.tmax")
+modS.tmin <- readRDS("../scratch/model_storage/modS.tmin")
+
+modS.ppt_tmax <- readRDS("../scratch/model_storage/modS.ppt_tmax")
+modS.ppt_tmin <- readRDS("../scratch/model_storage/modS.ppt_tmin")
+```
+
+# Prediction helper functions
+```{r}
+make_predictions <- function(
+    model,
+    data,
+    focal_var,
+    covariate_var,
+    restrict_to_AU_range = TRUE,
+    n = 200
+) {
+
+  # Make sure AU has the same factor levels as model data
+  data <- data %>%
+    mutate(AU = factor(AU))
+
+  au_levels <- levels(data$AU)
+
+  # ---------------------------------------------------
+  # Prediction range
+  # ---------------------------------------------------
+
+  if (restrict_to_AU_range) {
+
+  pred_grid <- data %>%
+    group_by(AU) %>%
+    summarise(
+      focal_min = min(.data[[focal_var]], na.rm = TRUE),
+      focal_max = max(.data[[focal_var]], na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    rowwise() %>%
+    mutate(
+      focal_value = list(
+        seq(
+          from = focal_min,
+          to = focal_max,
+          length.out = n
+        )
+      )
+    ) %>%
+    ungroup() %>%
+    select(AU, focal_value) %>%
+    tidyr::unnest(focal_value)
+
+} else {
+
+  pred_grid <- tidyr::expand_grid(
+    AU = levels(data$AU),
+    focal_value = seq(
+      min(data[[focal_var]], na.rm = TRUE),
+      max(data[[focal_var]], na.rm = TRUE),
+      length.out = n
+    )
+  )
+}
+
+  # Put focal variable into correctly named column
+  pred_grid[[focal_var]] <- pred_grid$focal_value
+  pred_grid$focal_value <- NULL
+
+  # ---------------------------------------------------
+  # Hold non-focal environmental variable at its median
+  # ---------------------------------------------------
+
+  pred_grid[[covariate_var]] <- median(
+    data[[covariate_var]],
+    na.rm = TRUE
+  )
+
+  # ---------------------------------------------------
+  # x and y are required by predict(), even though
+  # spatial smooth will be excluded
+  # ---------------------------------------------------
+
+  pred_grid$x <- median(data$x, na.rm = TRUE)
+  pred_grid$y <- median(data$y, na.rm = TRUE)
+
+  pred_grid$AU <- factor(
+    pred_grid$AU,
+    levels = levels(data$AU)
+  )
+
+  # ---------------------------------------------------
+  # Prediction excluding broad spatial adjustment
+  # ---------------------------------------------------
+
+  p <- predict(
+    model,
+    newdata = pred_grid,
+    type = "link",
+    se.fit = TRUE,
+    exclude = "s(x,y)"
+  )
+
+  pred_grid <- pred_grid %>%
+    mutate(
+      fit = as.numeric(p$fit),
+      se = as.numeric(p$se.fit),
+      lower = fit - 1.96 * se,
+      upper = fit + 1.96 * se
+    )
+
+  pred_grid
+}
+```
+
+```{r}
+plot_predictions <- function(
+    predictions,
+    data,
+    focal_var,
+    x_label,
+    title = NULL,
+    facet = FALSE,
+    show_rug = TRUE
+) {
+
+  # Add readable AU labels
+  predictions <- predictions %>%
+    mutate(
+      AU_name = recode(
+        as.character(AU),
+        !!!AU_names
+      )
+    )
+
+  plot_data <- data %>%
+    mutate(
+      AU_name = recode(
+        as.character(AU),
+        !!!AU_names
+      )
+    )
+
+  p <- ggplot(
+    predictions,
+    aes(
+      x = .data[[focal_var]],
+      y = fit,
+      color = AU_name,
+      fill = AU_name
+    )
+  ) +
+
+    geom_ribbon(
+      aes(
+        ymin = lower,
+        ymax = upper
+      ),
+      alpha = 0.15,
+      colour = NA
+    ) +
+
+    geom_line(
+      linewidth = 1
+    ) +
+
+    geom_hline(
+      yintercept = 0,
+      linetype = "dashed",
+      linewidth = 0.5
+    ) +
+
+    scale_color_manual(
+      values = cols,
+      name = "Adaptive Unit"
+    ) +
+
+    scale_fill_manual(
+      values = cols,
+      name = "Adaptive Unit"
+    ) +
+
+    theme_classic() +
+
+    labs(
+      x = x_label,
+      y = "Predicted abundance trend",
+      title = title
+    ) +
+
+    theme(
+      legend.position = "top",
+      legend.title = element_blank()
+    )
+
+  # Observed values along x axis
+  if (show_rug) {
+
+    p <- p +
+      geom_rug(
+        data = plot_data,
+        aes(
+          x = .data[[focal_var]],
+          color = AU_name
+        ),
+        inherit.aes = FALSE,
+        sides = "b",
+        alpha = 0.15,
+        linewidth = 0.25
+      )
+  }
+
+  # Optional facets
+  if (facet) {
+
+    p <- p +
+      facet_wrap(
+        ~ AU_name,
+        nrow = 1
+      ) +
+      theme(
+        legend.position = "none"
+      )
+  }
+
+  p
+}
+```
+
+# Mod GS
+## Tmax
+```{r}
+pred_GS_tmax <- make_predictions(
+  model = modGS.tmax,
+  data = clean.data,
+  focal_var = "tmax_june_delta",
+  covariate_var = "ppt_june_delta"
+)
+
+p_GS_tmax_facet <- plot_predictions(
+  predictions = pred_GS_tmax,
+  data = clean.data,
+  focal_var = "tmax_june_delta",
+  x_label = expression("Change in June " ~ T[max]),
+  title = "Maximum temperature",
+  facet = TRUE
+)
+
+p_GS_tmax_facet
+```
+## Tmin
+```{r}
+pred_GS_tmin <- make_predictions(
+  model = modGS.tmin,
+  data = clean.data,
+  focal_var = "tmin_june_delta",
+  covariate_var = "ppt_june_delta"
+)
+
+p_GS_tmin_facet <- plot_predictions(
+  predictions = pred_GS_tmin,
+  data = clean.data,
+  focal_var = "tmin_june_delta",
+  x_label = expression("Change in June " ~ T[min]),
+  title = "Minimum temperature",
+  facet = TRUE
+)
+
+p_GS_tmin_facet
+```
+## PPT
+```{r}
+pred_GS_ppt_tmax <- make_predictions(
+  model = modGS.ppt_tmax,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  covariate_var = "tmax_june_delta"
+)
+
+p_GS_ppt_tmax <- plot_predictions(
+  predictions = pred_GS_ppt_tmax,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  x_label = "Change in June precipitation",
+  title = "Precipitation | Tmax model",
+  facet = TRUE
+)
+
+p_GS_ppt_tmax
+```
+
+```{r}
+pred_GS_ppt_tmin <- make_predictions(
+  model = modGS.ppt_tmin,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  covariate_var = "tmin_june_delta"
+)
+
+p_GS_ppt_tmin <- plot_predictions(
+  predictions = pred_GS_ppt_tmin,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  x_label = "Change in June precipitation",
+  title = "Precipitation | Tmin model",
+  facet = TRUE
+)
+
+p_GS_ppt_tmin
+```
+
+# mod G
+```{r}
+pred_G_tmax <- make_predictions(
+  model = modG.ppt_tmax,
+  data = clean.data,
+  focal_var = "tmax_june_delta",
+  covariate_var = "ppt_june_delta"
+)
+
+p_G_tmax <- plot_predictions(
+  predictions = pred_G_tmax,
+  data = clean.data,
+  focal_var = "tmax_june_delta",
+  x_label = expression("Change in June " ~ T[max]),
+  title = "G model: Tmax",
+  facet = FALSE
+)
+
+p_G_tmax
+```
+
+```{r}
+pred_G_ppt_tmax <- make_predictions(
+  model = modG.ppt_tmax,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  covariate_var = "tmax_june_delta"
+)
+
+p_G_ppt_tmax <- plot_predictions(
+  predictions = pred_G_ppt_tmax,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  x_label = "Change in June precipitation",
+  title = "G model: precipitation | Tmax",
+  facet = TRUE
+)
+
+p_G_ppt_tmax
+```
+
+```{r}
+pred_G_tmin <- make_predictions(
+  model = modG.ppt_tmin,
+  data = clean.data,
+  focal_var = "tmin_june_delta",
+  covariate_var = "ppt_june_delta"
+)
+
+p_G_tmin <- plot_predictions(
+  predictions = pred_G_tmin,
+  data = clean.data,
+  focal_var = "tmin_june_delta",
+  x_label = expression("Change in June " ~ T[min]),
+  title = "G model: Tmin",
+  facet = TRUE
+)
+p_G_tmin
+```
+
+```{r}
+pred_G_ppt_tmin <- make_predictions(
+  model = modG.ppt_tmin,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  covariate_var = "tmin_june_delta"
+)
+
+p_G_ppt_tmin <- plot_predictions(
+  predictions = pred_G_ppt_tmin,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  x_label = "Change in June precipitation",
+  title = "G model: precipitation | Tmin",
+  facet = TRUE
+)
+
+p_G_ppt_tmin
+
+```
+
+# modS
+```{r}
+pred_S_tmax <- make_predictions(
+  model = modS.tmax,
+  data = clean.data,
+  focal_var = "tmax_june_delta",
+  covariate_var = "ppt_june_delta"
+)
+
+p_S_tmax <- plot_predictions(
+  predictions = pred_S_tmax,
+  data = clean.data,
+  focal_var = "tmax_june_delta",
+  x_label = expression("Change in June " ~ T[max]),
+  title = "S model: Tmax"
+)
+
+p_S_tmax
+```
+
+```{r}
+pred_S_tmin <- make_predictions(
+  model = modS.tmin,
+  data = clean.data,
+  focal_var = "tmin_june_delta",
+  covariate_var = "ppt_june_delta"
+)
+
+p_S_tmin <- plot_predictions(
+  predictions = pred_S_tmin,
+  data = clean.data,
+  focal_var = "tmin_june_delta",
+  x_label = expression("Change in June " ~ T[min]),
+  title = "S model: Tmin"
+)
+
+p_S_tmin
+```
+
+```{r}
+pred_S_ppt_tmax <- make_predictions(
+  model = modS.ppt_tmax,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  covariate_var = "tmax_june_delta"
+)
+
+p_S_ppt_tmax <- plot_predictions(
+  predictions = pred_S_ppt_tmax,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  x_label = "Change in June precipitation",
+  title = "S model: precipitation | Tmax"
+)
+
+p_S_ppt_tmax
+```
+
+```{r}
+pred_S_ppt_tmin <- make_predictions(
+  model = modS.ppt_tmin,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  covariate_var = "tmin_june_delta"
+)
+
+p_S_ppt_tmin <- plot_predictions(
+  predictions = pred_S_ppt_tmin,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  x_label = "Change in June precipitation",
+  title = "S model: precipitation | Tmin"
+)
+
+p_S_ppt_tmin
+```
+
+# G vs GS vs S model-form comparison
+```{r}
+p_compare_tmax <-
+  plot_predictions(
+    pred_G_tmax,
+    clean.data,
+    "tmax_june_delta",
+    expression("Change in June " ~ T[max]),
+    title = "G: shared response",
+    show_rug = FALSE
+  ) +
+  plot_predictions(
+    pred_GS_tmax,
+    clean.data,
+    "tmax_june_delta",
+    expression("Change in June " ~ T[max]),
+    title = "GS: shared + AU deviation",
+    show_rug = FALSE
+  ) +
+  plot_predictions(
+    pred_S_tmax,
+    clean.data,
+    "tmax_june_delta",
+    expression("Change in June " ~ T[max]),
+    title = "S: AU-specific response",
+    show_rug = FALSE
+  ) +
+  plot_layout(
+    ncol = 3,
+    guides = "collect"
+  ) &
+  theme(
+    legend.position = "top"
+  )
+
+p_compare_tmax
+```
+
+```{r}
+p_compare_tmin <-
+  plot_predictions(
+    pred_G_tmin,
+    clean.data,
+    "tmin_june_delta",
+    expression("Change in June " ~ T[min]),
+    title = "G: shared response",
+    show_rug = FALSE
+  ) +
+  plot_predictions(
+    pred_GS_tmin,
+    clean.data,
+    "tmin_june_delta",
+    expression("Change in June " ~ T[min]),
+    title = "GS: shared + AU deviation",
+    show_rug = FALSE
+  ) +
+  plot_predictions(
+    pred_S_tmin,
+    clean.data,
+    "tmin_june_delta",
+    expression("Change in June " ~ T[min]),
+    title = "S: AU-specific response",
+    show_rug = FALSE
+  ) +
+  plot_layout(
+    ncol = 3,
+    guides = "collect"
+  ) &
+  theme(
+    legend.position = "top"
+  )
+
+p_compare_tmin
+```
+
+```{r}
+p_compare_ppt_tmax <-
+  plot_predictions(
+    pred_G_ppt_tmax,
+    clean.data,
+    "ppt_june_delta",
+    "Change in June precipitation",
+    title = "G: shared response",
+    show_rug = FALSE
+  ) +
+  plot_predictions(
+    pred_GS_ppt_tmax,
+    clean.data,
+    "ppt_june_delta",
+    "Change in June precipitation",
+    title = "GS: shared + AU deviation",
+    show_rug = FALSE
+  ) +
+  plot_predictions(
+    pred_S_ppt_tmax,
+    clean.data,
+    "ppt_june_delta",
+    "Change in June precipitation",
+    title = "S: AU-specific response",
+    show_rug = FALSE
+  ) +
+  plot_layout(
+    ncol = 3,
+    guides = "collect"
+  ) &
+  theme(
+    legend.position = "top"
+  )
+
+p_compare_ppt_tmax
+```
+
+```{r}
+p_compare_ppt_tmin <-
+  plot_predictions(
+    pred_G_ppt_tmin,
+    clean.data,
+    "ppt_june_delta",
+    "Change in June precipitation",
+    title = "G: shared response",
+    show_rug = FALSE
+  ) +
+  plot_predictions(
+    pred_GS_ppt_tmin,
+    clean.data,
+    "ppt_june_delta",
+    "Change in June precipitation",
+    title = "GS: shared + AU deviation",
+    show_rug = FALSE
+  ) +
+  plot_predictions(
+    pred_S_ppt_tmin,
+    clean.data,
+    "ppt_june_delta",
+    "Change in June precipitation",
+    title = "S: AU-specific response",
+    show_rug = FALSE
+  ) +
+  plot_layout(
+    ncol = 3,
+    guides = "collect"
+  ) &
+  theme(
+    legend.position = "top"
+  )
+
+p_compare_ppt_tmin
+```
+
+# Threshold Analysis
+## Tmax
+```{r}
+tmax_grid <- clean.data %>%
+  group_by(AU) %>%
+  summarise(
+    tmin = min(tmax_june_delta, na.rm = TRUE),
+    tmax = max(tmax_june_delta, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmax_june_delta = list(
+      seq(tmin, tmax, length.out = 300)
+    )
+  ) %>%
+  ungroup() %>%
+  select(AU, tmax_june_delta) %>%
+  tidyr::unnest(tmax_june_delta)
+
+# Hold precipitation constant at its median
+tmax_grid$ppt_june_delta <- median(
+  clean.data$ppt_june_delta,
+  na.rm = TRUE
+)
+
+# x/y are needed by predict()
+# Holding them constant means their derivative wrt Tmax is zero
+tmax_grid$x <- median(clean.data$x, na.rm = TRUE)
+tmax_grid$y <- median(clean.data$y, na.rm = TRUE)
+
+tmax_grid$AU <- factor(
+  tmax_grid$AU,
+  levels = levels(clean.data$AU)
+)
+
+# Small finite-difference step
+eps_tmax <- diff(
+  range(clean.data$tmax_june_delta, na.rm = TRUE)
+) / 10000
+
+# Create grids just below and above each Tmax value
+tmax_lo <- tmax_grid
+tmax_hi <- tmax_grid
+
+tmax_lo$tmax_june_delta <-
+  tmax_lo$tmax_june_delta - eps_tmax / 2
+
+tmax_hi$tmax_june_delta <-
+  tmax_hi$tmax_june_delta + eps_tmax / 2
+
+# Linear predictor matrices
+Xp_lo_tmax <- predict(
+  modGS.tmax,
+  newdata = tmax_lo,
+  type = "lpmatrix"
+)
+
+Xp_hi_tmax <- predict(
+  modGS.tmax,
+  newdata = tmax_hi,
+  type = "lpmatrix"
+)
+
+# Approximate derivative of the design matrix
+Xd_tmax <- (
+  Xp_hi_tmax - Xp_lo_tmax
+) / eps_tmax
+```
+
+```{r}
+# Model coefficients
+beta_tmax <- coef(modGS.tmax)
+
+# Coefficient covariance matrix
+# unconditional = TRUE also incorporates smoothing parameter uncertainty
+Vb_tmax <- vcov(
+  modGS.tmax,
+  unconditional = TRUE
+)
+
+# Derivative of the fitted GS curve
+tmax_derivative <- as.vector(
+  Xd_tmax %*% beta_tmax
+)
+
+# SE of derivative, retaining covariance among smooth components
+tmax_derivative_se <- sqrt(
+  rowSums(
+    (Xd_tmax %*% Vb_tmax) * Xd_tmax
+  )
+)
+
+# Add results to prediction grid
+deriv_GS_tmax <- tmax_grid %>%
+  mutate(
+    derivative = tmax_derivative,
+    se = tmax_derivative_se,
+    lower = derivative - 1.96 * se,
+    upper = derivative + 1.96 * se,
+
+    change = case_when(
+      lower > 0 ~ "Increasing",
+      upper < 0 ~ "Decreasing",
+      TRUE ~ "No detectable change"
+    )
+  )
+```
+
+```{r}
+head(deriv_GS_tmax)
+
+table(
+  deriv_GS_tmax$AU,
+  deriv_GS_tmax$change
+)
+```
+
+```{r}
+ggplot(
+  deriv_GS_tmax,
+  aes(
+    x = tmax_june_delta,
+    y = derivative,
+    color = AU,
+    fill = AU
+  )
+) +
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper
+    ),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line(
+    linewidth = 1
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  facet_wrap(
+    ~ AU,
+    nrow = 1,
+    scales = "free_x"
+  ) +
+  theme_classic() +
+  labs(
+    x = expression("Change in June " ~ T[max]),
+    y = expression(
+      paste(
+        "Derivative of abundance trend ",
+        "(d trend / d ", Delta, T[max], ")"
+      )
+    ),
+    title = "GS model: Tmax derivative"
+  ) +
+  theme(
+    legend.position = "none"
+  )
+```
+
+```{r}
+tmax_intervals <- deriv_GS_tmax %>%
+  arrange(AU, tmax_june_delta) %>%
+  group_by(AU) %>%
+  mutate(
+    sig_direction = case_when(
+      lower > 0 ~ "Increasing",
+      upper < 0 ~ "Decreasing",
+      TRUE ~ NA_character_
+    ),
+
+    # Start a new interval whenever the significance state changes
+    interval_start =
+      sig_direction != lag(sig_direction) |
+      is.na(sig_direction) != is.na(lag(sig_direction))
+  ) %>%
+  mutate(
+    interval_start = replace_na(interval_start, TRUE),
+    interval_id = cumsum(interval_start)
+  ) %>%
+  filter(!is.na(sig_direction)) %>%
+  group_by(AU, interval_id, sig_direction) %>%
+  summarise(
+    start_tmax = min(tmax_june_delta),
+    end_tmax = max(tmax_june_delta),
+    min_derivative = min(derivative),
+    max_derivative = max(derivative),
+    .groups = "drop"
+  )
+
+tmax_intervals
+```
+
+## Tmin
+```{r}
+tmin_grid <- clean.data %>%
+  group_by(AU) %>%
+  summarise(
+    tmin = min(tmin_june_delta, na.rm = TRUE),
+    tmax = max(tmin_june_delta, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmin_june_delta = list(
+      seq(tmin, tmax, length.out = 300)
+    )
+  ) %>%
+  ungroup() %>%
+  select(AU, tmin_june_delta) %>%
+  tidyr::unnest(tmin_june_delta)
+
+# Hold precipitation constant at its median
+tmin_grid$ppt_june_delta <- median(
+  clean.data$ppt_june_delta,
+  na.rm = TRUE
+)
+
+# Hold spatial coordinates constant
+tmin_grid$x <- median(clean.data$x, na.rm = TRUE)
+tmin_grid$y <- median(clean.data$y, na.rm = TRUE)
+
+tmin_grid$AU <- factor(
+  tmin_grid$AU,
+  levels = levels(clean.data$AU)
+)
+
+# Small finite-difference step
+eps_tmin <- diff(
+  range(clean.data$tmin_june_delta, na.rm = TRUE)
+) / 10000
+
+# Create grids just below and above each Tmin value
+tmin_lo <- tmin_grid
+tmin_hi <- tmin_grid
+
+tmin_lo$tmin_june_delta <-
+  tmin_lo$tmin_june_delta - eps_tmin / 2
+
+tmin_hi$tmin_june_delta <-
+  tmin_hi$tmin_june_delta + eps_tmin / 2
+
+# Linear predictor matrices
+Xp_lo_tmin <- predict(
+  modGS.tmin,
+  newdata = tmin_lo,
+  type = "lpmatrix"
+)
+
+Xp_hi_tmin <- predict(
+  modGS.tmin,
+  newdata = tmin_hi,
+  type = "lpmatrix"
+)
+
+# Approximate derivative of the design matrix
+Xd_tmin <- (
+  Xp_hi_tmin - Xp_lo_tmin
+) / eps_tmin
+```
+
+```{r}
+# Model coefficients
+beta_tmin <- coef(modGS.tmin)
+
+# Coefficient covariance matrix
+Vb_tmin <- vcov(
+  modGS.tmin,
+  unconditional = TRUE
+)
+
+# Derivative of fitted GS curve
+tmin_derivative <- as.vector(
+  Xd_tmin %*% beta_tmin
+)
+
+# SE of derivative
+tmin_derivative_se <- sqrt(
+  rowSums(
+    (Xd_tmin %*% Vb_tmin) * Xd_tmin
+  )
+)
+
+# Add results to prediction grid
+deriv_GS_tmin <- tmin_grid %>%
+  mutate(
+    derivative = tmin_derivative,
+    se = tmin_derivative_se,
+    lower = derivative - 1.96 * se,
+    upper = derivative + 1.96 * se,
+
+    change = case_when(
+      lower > 0 ~ "Increasing",
+      upper < 0 ~ "Decreasing",
+      TRUE ~ "No detectable change"
+    )
+  )
+```
+
+```{r}
+head(deriv_GS_tmin)
+
+table(
+  deriv_GS_tmin$AU,
+  deriv_GS_tmin$change
+)
+```
+
+```{r}
+ggplot(
+  deriv_GS_tmin,
+  aes(
+    x = tmin_june_delta,
+    y = derivative,
+    color = AU,
+    fill = AU
+  )
+) +
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper
+    ),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line(
+    linewidth = 1
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  facet_wrap(
+    ~ AU,
+    nrow = 1,
+    scales = "free_x"
+  ) +
+  theme_classic() +
+  labs(
+    x = expression("Change in June " ~ T[min]),
+    y = expression(
+      paste(
+        "Derivative of abundance trend ",
+        "(d trend / d ", Delta, T[min], ")"
+      )
+    ),
+    title = "GS model: Tmin derivative"
+  ) +
+  theme(
+    legend.position = "none"
+  )
+```
+
+```{r}
+tmin_intervals <- deriv_GS_tmin %>%
+  arrange(AU, tmin_june_delta) %>%
+  group_by(AU) %>%
+  mutate(
+    sig_direction = case_when(
+      lower > 0 ~ "Increasing",
+      upper < 0 ~ "Decreasing",
+      TRUE ~ NA_character_
+    ),
+
+    interval_start =
+      sig_direction != lag(sig_direction) |
+      is.na(sig_direction) != is.na(lag(sig_direction))
+  ) %>%
+  mutate(
+    interval_start = replace_na(interval_start, TRUE),
+    interval_id = cumsum(interval_start)
+  ) %>%
+  filter(!is.na(sig_direction)) %>%
+  group_by(AU, interval_id, sig_direction) %>%
+  summarise(
+    start_tmin = min(tmin_june_delta),
+    end_tmin = max(tmin_june_delta),
+    min_derivative = min(derivative),
+    max_derivative = max(derivative),
+    .groups = "drop"
+  )
+
+tmin_intervals
+```
+
+## PPT-Tmax
+```{r}
+ppt_tmax_grid <- clean.data %>%
+  group_by(AU) %>%
+  summarise(
+    pmin = min(ppt_june_delta, na.rm = TRUE),
+    pmax = max(ppt_june_delta, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    ppt_june_delta = list(
+      seq(pmin, pmax, length.out = 300)
+    )
+  ) %>%
+  ungroup() %>%
+  select(AU, ppt_june_delta) %>%
+  tidyr::unnest(ppt_june_delta)
+
+# Hold Tmax constant at its median
+ppt_tmax_grid$tmax_june_delta <- median(
+  clean.data$tmax_june_delta,
+  na.rm = TRUE
+)
+
+# Hold spatial coordinates constant
+ppt_tmax_grid$x <- median(clean.data$x, na.rm = TRUE)
+ppt_tmax_grid$y <- median(clean.data$y, na.rm = TRUE)
+
+ppt_tmax_grid$AU <- factor(
+  ppt_tmax_grid$AU,
+  levels = levels(clean.data$AU)
+)
+
+# Finite-difference step
+eps_ppt <- diff(
+  range(clean.data$ppt_june_delta, na.rm = TRUE)
+) / 10000
+
+ppt_tmax_lo <- ppt_tmax_grid
+ppt_tmax_hi <- ppt_tmax_grid
+
+ppt_tmax_lo$ppt_june_delta <-
+  ppt_tmax_lo$ppt_june_delta - eps_ppt / 2
+
+ppt_tmax_hi$ppt_june_delta <-
+  ppt_tmax_hi$ppt_june_delta + eps_ppt / 2
+
+# Linear predictor matrices
+Xp_lo_ppt_tmax <- predict(
+  modGS.ppt_tmax,
+  newdata = ppt_tmax_lo,
+  type = "lpmatrix"
+)
+
+Xp_hi_ppt_tmax <- predict(
+  modGS.ppt_tmax,
+  newdata = ppt_tmax_hi,
+  type = "lpmatrix"
+)
+
+Xd_ppt_tmax <- (
+  Xp_hi_ppt_tmax - Xp_lo_ppt_tmax
+) / eps_ppt
+```
+
+```{r}
+beta_ppt_tmax <- coef(modGS.ppt_tmax)
+
+Vb_ppt_tmax <- vcov(
+  modGS.ppt_tmax,
+  unconditional = TRUE
+)
+
+ppt_tmax_derivative <- as.vector(
+  Xd_ppt_tmax %*% beta_ppt_tmax
+)
+
+ppt_tmax_derivative_se <- sqrt(
+  rowSums(
+    (Xd_ppt_tmax %*% Vb_ppt_tmax) * Xd_ppt_tmax
+  )
+)
+
+deriv_GS_ppt_tmax <- ppt_tmax_grid %>%
+  mutate(
+    derivative = ppt_tmax_derivative,
+    se = ppt_tmax_derivative_se,
+    lower = derivative - 1.96 * se,
+    upper = derivative + 1.96 * se,
+
+    change = case_when(
+      lower > 0 ~ "Increasing",
+      upper < 0 ~ "Decreasing",
+      TRUE ~ "No detectable change"
+    )
+  )
+```
+```{r}
+head(deriv_GS_ppt_tmax)
+
+table(
+  deriv_GS_ppt_tmax$AU,
+  deriv_GS_ppt_tmax$change
+)
+```
+```{r}
+ggplot(
+  deriv_GS_ppt_tmax,
+  aes(
+    x = ppt_june_delta,
+    y = derivative,
+    color = AU,
+    fill = AU
+  )
+) +
+  geom_ribbon(
+    aes(ymin = lower, ymax = upper),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line(linewidth = 1) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  facet_wrap(
+    ~ AU,
+    nrow = 1,
+    scales = "free_x"
+  ) +
+  theme_classic() +
+  labs(
+    x = "Change in June precipitation",
+    y = "Derivative of abundance trend",
+    title = "GS model: precipitation derivative | Tmax model"
+  ) +
+  theme(
+    legend.position = "none"
+  )
+```
+
+```{r}
+ppt_tmax_intervals <- deriv_GS_ppt_tmax %>%
+  arrange(AU, ppt_june_delta) %>%
+  group_by(AU) %>%
+  mutate(
+    sig_direction = case_when(
+      lower > 0 ~ "Increasing",
+      upper < 0 ~ "Decreasing",
+      TRUE ~ NA_character_
+    ),
+
+    interval_start =
+      sig_direction != lag(sig_direction) |
+      is.na(sig_direction) != is.na(lag(sig_direction))
+  ) %>%
+  mutate(
+    interval_start = replace_na(interval_start, TRUE),
+    interval_id = cumsum(interval_start)
+  ) %>%
+  filter(!is.na(sig_direction)) %>%
+  group_by(AU, interval_id, sig_direction) %>%
+  summarise(
+    start_ppt = min(ppt_june_delta),
+    end_ppt = max(ppt_june_delta),
+    min_derivative = min(derivative),
+    max_derivative = max(derivative),
+    .groups = "drop"
+  )
+
+ppt_tmax_intervals
+```
+
+## PPT_TMin
+```{r}
+ppt_tmin_grid <- clean.data %>%
+  group_by(AU) %>%
+  summarise(
+    pmin = min(ppt_june_delta, na.rm = TRUE),
+    pmax = max(ppt_june_delta, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    ppt_june_delta = list(
+      seq(pmin, pmax, length.out = 300)
+    )
+  ) %>%
+  ungroup() %>%
+  select(AU, ppt_june_delta) %>%
+  tidyr::unnest(ppt_june_delta)
+
+# Hold Tmin constant at its median
+ppt_tmin_grid$tmin_june_delta <- median(
+  clean.data$tmin_june_delta,
+  na.rm = TRUE
+)
+
+ppt_tmin_grid$x <- median(clean.data$x, na.rm = TRUE)
+ppt_tmin_grid$y <- median(clean.data$y, na.rm = TRUE)
+
+ppt_tmin_grid$AU <- factor(
+  ppt_tmin_grid$AU,
+  levels = levels(clean.data$AU)
+)
+
+# Same precipitation finite-difference step
+ppt_tmin_lo <- ppt_tmin_grid
+ppt_tmin_hi <- ppt_tmin_grid
+
+ppt_tmin_lo$ppt_june_delta <-
+  ppt_tmin_lo$ppt_june_delta - eps_ppt / 2
+
+ppt_tmin_hi$ppt_june_delta <-
+  ppt_tmin_hi$ppt_june_delta + eps_ppt / 2
+
+Xp_lo_ppt_tmin <- predict(
+  modGS.ppt_tmin,
+  newdata = ppt_tmin_lo,
+  type = "lpmatrix"
+)
+
+Xp_hi_ppt_tmin <- predict(
+  modGS.ppt_tmin,
+  newdata = ppt_tmin_hi,
+  type = "lpmatrix"
+)
+
+Xd_ppt_tmin <- (
+  Xp_hi_ppt_tmin - Xp_lo_ppt_tmin
+) / eps_ppt
+```
+```{r}
+beta_ppt_tmin <- coef(modGS.ppt_tmin)
+
+Vb_ppt_tmin <- vcov(
+  modGS.ppt_tmin,
+  unconditional = TRUE
+)
+
+ppt_tmin_derivative <- as.vector(
+  Xd_ppt_tmin %*% beta_ppt_tmin
+)
+
+ppt_tmin_derivative_se <- sqrt(
+  rowSums(
+    (Xd_ppt_tmin %*% Vb_ppt_tmin) * Xd_ppt_tmin
+  )
+)
+
+deriv_GS_ppt_tmin <- ppt_tmin_grid %>%
+  mutate(
+    derivative = ppt_tmin_derivative,
+    se = ppt_tmin_derivative_se,
+    lower = derivative - 1.96 * se,
+    upper = derivative + 1.96 * se,
+
+    change = case_when(
+      lower > 0 ~ "Increasing",
+      upper < 0 ~ "Decreasing",
+      TRUE ~ "No detectable change"
+    )
+  )
+```
+```{r}
+head(deriv_GS_ppt_tmin)
+
+table(
+  deriv_GS_ppt_tmin$AU,
+  deriv_GS_ppt_tmin$change
+)
+```
+```{r}
+ggplot(
+  deriv_GS_ppt_tmin,
+  aes(
+    x = ppt_june_delta,
+    y = derivative,
+    color = AU,
+    fill = AU
+  )
+) +
+  geom_ribbon(
+    aes(ymin = lower, ymax = upper),
+    alpha = 0.15,
+    color = NA
+  ) +
+  geom_line(linewidth = 1) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  facet_wrap(
+    ~ AU,
+    nrow = 1,
+    scales = "free_x"
+  ) +
+  theme_classic() +
+  labs(
+    x = "Change in June precipitation",
+    y = "Derivative of abundance trend",
+    title = "GS model: precipitation derivative | Tmin model"
+  ) +
+  theme(
+    legend.position = "none"
+  )
+```
+```{r}
+ppt_tmin_intervals <- deriv_GS_ppt_tmin %>%
+  arrange(AU, ppt_june_delta) %>%
+  group_by(AU) %>%
+  mutate(
+    sig_direction = case_when(
+      lower > 0 ~ "Increasing",
+      upper < 0 ~ "Decreasing",
+      TRUE ~ NA_character_
+    ),
+
+    interval_start =
+      sig_direction != lag(sig_direction) |
+      is.na(sig_direction) != is.na(lag(sig_direction))
+  ) %>%
+  mutate(
+    interval_start = replace_na(interval_start, TRUE),
+    interval_id = cumsum(interval_start)
+  ) %>%
+  filter(!is.na(sig_direction)) %>%
+  group_by(AU, interval_id, sig_direction) %>%
+  summarise(
+    start_ppt = min(ppt_june_delta),
+    end_ppt = max(ppt_june_delta),
+    min_derivative = min(derivative),
+    max_derivative = max(derivative),
+    .groups = "drop"
+  )
+
+ppt_tmin_intervals
+```
+
+# AU level correlation
+I noticed that the northern Tmin and Tmax are very similar visually in their prediction curves...
+```{r}
+clean.data %>%
+  group_by(AU) %>%
+  summarise(
+    cor_tmax_tmin = cor(
+      tmax_june_delta,
+      tmin_june_delta,
+      use = "complete.obs"
+    ),
+    .groups = "drop"
+  )
+```
+So that makes sense, they're basically 1-1 correlated for the Northern AU (AU3).
+
+```{r}
+clean.data %>%
+  group_by(AU) %>%
+  summarise(
+    tmax_min = min(tmax_june_delta, na.rm = TRUE),
+    tmax_max = max(tmax_june_delta, na.rm = TRUE),
+    tmin_min = min(tmin_june_delta, na.rm = TRUE),
+    tmin_max = max(tmin_june_delta, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+So, ranges are nearly identical and they're supper correlated. This means that the Tmin (nighttime temp probably) and Tmax (daytime temp) are changing the same amount 2012-2022.
+
+"In the Northern AU, changes in June maximum and minimum temperature were strongly correlated (r = 0.90) and spanned similar ranges, resulting in highly concordant abundance-response curves for the two temperature metrics."
+
