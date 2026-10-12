@@ -26,6 +26,7 @@ analysis/04.predictors_of_decline/figures
 analysis/04.predictors_of_decline/scratch/BBS_data
 analysis/04.predictors_of_decline/scratch/genoscape_stars
 analysis/04.predictors_of_decline/scratch/spatial_predictors
+analysis/04.predictors_of_decline/scratch/model_storage
 analysis/04.predictors_of_decline/outputs/GAM_outputs/
 analysis/04.predictors_of_decline/outputs/GAM_outputs_55/function_out/AU_K3/*.rds
 
