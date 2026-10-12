@@ -20,6 +20,7 @@ library(tidyverse)
 library(adegenet)
 library(patchwork)
 library(viridis)
+library(sf)
 ```
 
 #INTRODUCTION
@@ -159,6 +160,7 @@ pdf("../figures/MEM_plots.pdf")
 print(mem_grid)
 dev.off()
 ```
+
 One thing I saw is a paper recommending was selecting MEMs from the final set (selmem) which are uncorrelated with your selected environmental variables as well. You can do that like:
 ```{r}
 env <- fread("../../05.genomic_offset/output/Bans_envonly_pop.txt")

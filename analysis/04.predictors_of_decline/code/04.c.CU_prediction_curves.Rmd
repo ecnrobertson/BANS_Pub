@@ -45,7 +45,7 @@ AU_names <- c(
 )
 
 # COLORS
-cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K3.rds")
+cols <- readRDS("../../06.final_figures/colors/AU_grouping_colors_K3_colorblind.rds")
 
 # Check that names line up
 levels(clean.data$AU)
@@ -274,7 +274,7 @@ plot_predictions <- function(
         ),
         inherit.aes = FALSE,
         sides = "b",
-        alpha = 0.15,
+        alpha = 0.50,
         linewidth = 0.25
       )
   }
@@ -316,6 +316,23 @@ p_GS_tmax_facet <- plot_predictions(
 )
 
 p_GS_tmax_facet
+pdf("../figures/prediction_plots/BANS_AU_K3_prediction_GS_tmax.pdf", width = 7, height = 3)
+print(p_GS_tmax_facet)
+dev.off()
+
+p_GS_tmax <- plot_predictions(
+  predictions = pred_GS_tmax,
+  data = clean.data,
+  focal_var = "tmax_june_delta",
+  x_label = expression("Change in June " ~ T[max]),
+  title = "Maximum temperature",
+  facet = FALSE
+)
+
+p_GS_tmax
+pdf("../figures/prediction_plots/BANS_AU_K3_prediction_GS_tmax_nofacet.pdf", width = 3.5, height = 3)
+print(p_GS_tmax)
+dev.off()
 ```
 ## Tmin
 ```{r}
@@ -336,6 +353,23 @@ p_GS_tmin_facet <- plot_predictions(
 )
 
 p_GS_tmin_facet
+pdf("../figures/prediction_plots/BANS_AU_K3_prediction_GS_tmin.pdf", width = 7, height = 3)
+print(p_GS_tmin_facet)
+dev.off()
+
+p_GS_tmin <- plot_predictions(
+  predictions = pred_GS_tmin,
+  data = clean.data,
+  focal_var = "tmin_june_delta",
+  x_label = expression("Change in June " ~ T[min]),
+  title = "Minimum temperature",
+  facet = FALSE
+)
+
+p_GS_tmin
+pdf("../figures/prediction_plots/BANS_AU_K3_prediction_GS_tmin_nofacet.pdf", width = 3.5, height = 3)
+print(p_GS_tmin)
+dev.off()
 ```
 ## PPT
 ```{r}
@@ -346,7 +380,7 @@ pred_GS_ppt_tmax <- make_predictions(
   covariate_var = "tmax_june_delta"
 )
 
-p_GS_ppt_tmax <- plot_predictions(
+p_GS_ppt_tmax_facet <- plot_predictions(
   predictions = pred_GS_ppt_tmax,
   data = clean.data,
   focal_var = "ppt_june_delta",
@@ -355,7 +389,24 @@ p_GS_ppt_tmax <- plot_predictions(
   facet = TRUE
 )
 
+p_GS_ppt_tmax_facet
+pdf("../figures/prediction_plots/BANS_AU_K3_prediction_GS_ppt_tmax.pdf", width = 7, height = 3)
+print(p_GS_ppt_tmax_facet)
+dev.off()
+
+p_GS_ppt_tmax <- plot_predictions(
+  predictions = pred_GS_ppt_tmax,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  x_label = "Change in June precipitation",
+  title = "Precipitation | Tmax model",
+  facet = FALSE
+)
+
 p_GS_ppt_tmax
+pdf("../figures/prediction_plots/BANS_AU_K3_prediction_GS_ppt_tmax_nofacet.pdf", width = 3.5, height = 3)
+print(p_GS_ppt_tmax)
+dev.off()
 ```
 
 ```{r}
@@ -366,7 +417,7 @@ pred_GS_ppt_tmin <- make_predictions(
   covariate_var = "tmin_june_delta"
 )
 
-p_GS_ppt_tmin <- plot_predictions(
+p_GS_ppt_tmin_facet <- plot_predictions(
   predictions = pred_GS_ppt_tmin,
   data = clean.data,
   focal_var = "ppt_june_delta",
@@ -375,7 +426,24 @@ p_GS_ppt_tmin <- plot_predictions(
   facet = TRUE
 )
 
+p_GS_ppt_tmin_facet
+pdf("../figures/prediction_plots/BANS_AU_K3_prediction_GS_ppt_tmin.pdf", width = 7, height = 3)
+print(p_GS_ppt_tmin_facet)
+dev.off()
+
+p_GS_ppt_tmin <- plot_predictions(
+  predictions = pred_GS_ppt_tmin,
+  data = clean.data,
+  focal_var = "ppt_june_delta",
+  x_label = "Change in June precipitation",
+  title = "Precipitation | Tmin model",
+  facet = FALSE
+)
+
 p_GS_ppt_tmin
+pdf("../figures/prediction_plots/BANS_AU_K3_prediction_GS_ppt_tmin_nofacet.pdf", width = 3.5, height = 3)
+print(p_GS_ppt_tmin)
+dev.off()
 ```
 
 # mod G
@@ -397,6 +465,10 @@ p_G_tmax <- plot_predictions(
 )
 
 p_G_tmax
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_G_tmax.png")
+pdf("../figures/prediction_plots/BANS_AU_K3_prediction_G_tmax.pdf", width=3.5, height=3)
+print(p_G_tmax)
+dev.off()
 ```
 
 ```{r}
@@ -413,10 +485,11 @@ p_G_ppt_tmax <- plot_predictions(
   focal_var = "ppt_june_delta",
   x_label = "Change in June precipitation",
   title = "G model: precipitation | Tmax",
-  facet = TRUE
+  facet = FALSE
 )
 
 p_G_ppt_tmax
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_G_ppt_tmax.png")
 ```
 
 ```{r}
@@ -433,9 +506,10 @@ p_G_tmin <- plot_predictions(
   focal_var = "tmin_june_delta",
   x_label = expression("Change in June " ~ T[min]),
   title = "G model: Tmin",
-  facet = TRUE
+  facet = FALSE
 )
 p_G_tmin
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_G_tmin.png")
 ```
 
 ```{r}
@@ -452,11 +526,11 @@ p_G_ppt_tmin <- plot_predictions(
   focal_var = "ppt_june_delta",
   x_label = "Change in June precipitation",
   title = "G model: precipitation | Tmin",
-  facet = TRUE
+  facet = FALSE
 )
 
 p_G_ppt_tmin
-
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_G_ppt_tmin.png")
 ```
 
 # modS
@@ -473,10 +547,12 @@ p_S_tmax <- plot_predictions(
   data = clean.data,
   focal_var = "tmax_june_delta",
   x_label = expression("Change in June " ~ T[max]),
-  title = "S model: Tmax"
+  title = "S model: Tmax",
+  facet = T
 )
 
 p_S_tmax
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_S_tmax.png")
 ```
 
 ```{r}
@@ -492,10 +568,12 @@ p_S_tmin <- plot_predictions(
   data = clean.data,
   focal_var = "tmin_june_delta",
   x_label = expression("Change in June " ~ T[min]),
-  title = "S model: Tmin"
+  title = "S model: Tmin",
+  facet=TRUE
 )
 
 p_S_tmin
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_S_tmin.png")
 ```
 
 ```{r}
@@ -511,10 +589,12 @@ p_S_ppt_tmax <- plot_predictions(
   data = clean.data,
   focal_var = "ppt_june_delta",
   x_label = "Change in June precipitation",
-  title = "S model: precipitation | Tmax"
+  title = "S model: precipitation | Tmax",
+  facet=T
 )
 
 p_S_ppt_tmax
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_S_ppt_tmax.png")
 ```
 
 ```{r}
@@ -530,10 +610,12 @@ p_S_ppt_tmin <- plot_predictions(
   data = clean.data,
   focal_var = "ppt_june_delta",
   x_label = "Change in June precipitation",
-  title = "S model: precipitation | Tmin"
+  title = "S model: precipitation | Tmin",
+  facet=T
 )
 
 p_S_ppt_tmin
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_S_ppt_tmin.png")
 ```
 
 # G vs GS vs S model-form comparison
@@ -572,6 +654,7 @@ p_compare_tmax <-
   )
 
 p_compare_tmax
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_compare_tmax.png", width=7, height=4)
 ```
 
 ```{r}
@@ -609,6 +692,7 @@ p_compare_tmin <-
   )
 
 p_compare_tmin
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_compare_tmin.png", width=7, height=4)
 ```
 
 ```{r}
@@ -646,6 +730,7 @@ p_compare_ppt_tmax <-
   )
 
 p_compare_ppt_tmax
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_compare_ppt_tmax.png", width=7, height=4)
 ```
 
 ```{r}
@@ -683,6 +768,7 @@ p_compare_ppt_tmin <-
   )
 
 p_compare_ppt_tmin
+ggsave("../figures/prediction_plots/BANS_AU_K3_prediction_compare_ppt_tmin.png", width=7, height=4)
 ```
 
 # Threshold Analysis
@@ -1455,3 +1541,153 @@ So, ranges are nearly identical and they're supper correlated. This means that t
 
 "In the Northern AU, changes in June maximum and minimum temperature were strongly correlated (r = 0.90) and spanned similar ranges, resulting in highly concordant abundance-response curves for the two temperature metrics."
 
+# Null Model Curves
+## Tmax
+```{r}
+null_tmax_grid <- data.frame(
+  tmax_june_delta = seq(
+    min(clean.data$tmax_june_delta, na.rm = TRUE),
+    max(clean.data$tmax_june_delta, na.rm = TRUE),
+    length.out = 300
+  )
+)
+
+# Hold precipitation constant
+null_tmax_grid$ppt_june_delta <- median(
+  clean.data$ppt_june_delta,
+  na.rm = TRUE
+)
+
+# Needed for prediction, though spatial smooth will be excluded
+null_tmax_grid$x <- median(clean.data$x, na.rm = TRUE)
+null_tmax_grid$y <- median(clean.data$y, na.rm = TRUE)
+
+# Predictions excluding spatial smooth
+pred_null_tmax <- predict(
+  null_tmax,
+  newdata = null_tmax_grid,
+  type = "link",
+  se.fit = TRUE,
+  exclude = "s(x,y)"
+)
+
+null_tmax_grid <- null_tmax_grid %>%
+  mutate(
+    fit = as.numeric(pred_null_tmax$fit),
+    se = as.numeric(pred_null_tmax$se.fit),
+    lower = fit - 1.96 * se,
+    upper = fit + 1.96 * se
+  )
+
+p_null_tmax <- ggplot(
+  null_tmax_grid,
+  aes(
+    x = tmax_june_delta,
+    y = fit
+  )
+) +
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper
+    ),
+    alpha = 0.15
+  ) +
+  geom_line(
+    linewidth = 1
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5
+  ) +
+  geom_rug(
+    data = clean.data,
+    aes(x = tmax_june_delta),
+    inherit.aes = FALSE,
+    alpha = 0.15,
+    linewidth = 0.25
+  ) +
+  theme_classic() +
+  labs(
+    x = expression("Change in June " ~ T[max]),
+    y = "Predicted abundance trend",
+    title = "Null model: maximum temperature"
+  )
+
+p_null_tmax
+```
+
+## Tmin
+```{r}
+null_tmin_grid <- data.frame(
+  tmin_june_delta = seq(
+    min(clean.data$tmin_june_delta, na.rm = TRUE),
+    max(clean.data$tmin_june_delta, na.rm = TRUE),
+    length.out = 300
+  )
+)
+
+# Hold precipitation constant
+null_tmin_grid$ppt_june_delta <- median(
+  clean.data$ppt_june_delta,
+  na.rm = TRUE
+)
+
+null_tmin_grid$x <- median(clean.data$x, na.rm = TRUE)
+null_tmin_grid$y <- median(clean.data$y, na.rm = TRUE)
+
+pred_null_tmin <- predict(
+  null_tmin,
+  newdata = null_tmin_grid,
+  type = "link",
+  se.fit = TRUE,
+  exclude = "s(x,y)"
+)
+
+null_tmin_grid <- null_tmin_grid %>%
+  mutate(
+    fit = as.numeric(pred_null_tmin$fit),
+    se = as.numeric(pred_null_tmin$se.fit),
+    lower = fit - 1.96 * se,
+    upper = fit + 1.96 * se
+  )
+
+p_null_tmin <- ggplot(
+  null_tmin_grid,
+  aes(
+    x = tmin_june_delta,
+    y = fit
+  )
+) +
+  geom_ribbon(
+    aes(
+      ymin = lower,
+      ymax = upper
+    ),
+    alpha = 0.15
+  ) +
+  geom_line(
+    linewidth = 1
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5
+  ) +
+  geom_rug(
+    data = clean.data,
+    aes(x = tmin_june_delta),
+    inherit.aes = FALSE,
+    alpha = 0.15,
+    linewidth = 0.25
+  ) +
+  theme_classic() +
+  labs(
+    x = expression("Change in June " ~ T[min]),
+    y = "Predicted abundance trend",
+    title = "Null model: minimum temperature"
+  )
+
+p_null_tmin
+```

@@ -480,32 +480,60 @@ countries_poly <- ne_download(
   category = "cultural",
   returnclass = "sf"
 )
-
-us_canada <- countries_poly %>%
-  filter(NAME %in% c("United States of America", "Canada", "Mexico")) %>%
-  st_make_valid()
 states_poly <- ne_download(
   scale = 10,
   type = "admin_1_states_provinces",
   category = "cultural",
   returnclass = "sf"
 )
+lakes_poly <- ne_download(
+  scale = 10,
+  type = "lakes",
+  category = "physical",
+  returnclass = "sf"
+)
+
+us_canada <- countries_poly %>%
+  filter(NAME %in% c(
+    "United States of America",
+    "Canada",
+    "Mexico"
+  )) %>%
+  st_make_valid()
 hawaii <- states_poly %>%
   filter(
     adm0_a3 == "USA",
     name == "Hawaii"
   )
-
-us_canada_proj <- st_transform(us_canada, st_crs(lamproj))
-hawaii_proj <- st_transform(hawaii, st_crs(lamproj))
-states_proj <- st_transform(states, st_crs(lamproj))
+us_canada_proj <- st_transform(
+  us_canada,
+  st_crs(lamproj)
+)
+hawaii_proj <- st_transform(
+  hawaii,
+  st_crs(us_canada_proj)
+)
+states_proj <- st_transform(
+  states_poly,
+  st_crs(us_canada_proj)
+)
+lakes_proj <- st_transform(
+  lakes_poly,
+  st_crs(us_canada_proj)
+)
 
 us_canada_no_hi <- st_difference(
   us_canada_proj,
   st_union(st_buffer(hawaii_proj, 5000))
 )
-
-states_us_canada <- st_intersection(states_proj, st_union(us_canada_no_hi))
+states_us_canada <- st_intersection(
+  states_proj,
+  st_union(us_canada_no_hi)
+)
+lakes_us_canada <- st_intersection(
+  lakes_proj,
+  st_union(us_canada_no_hi)
+)
 
 genoscape_cleaner <- ggplot() +
    geom_sf(
@@ -520,7 +548,13 @@ genoscape_cleaner <- ggplot() +
     color = "#A1A6AD",
     linewidth = 0.1225
   ) +
-    ggspatial::layer_spatial(genoscape_projected_clean) +
+  geom_sf(
+    data = lakes_us_canada,
+    fill = "white",
+    color = NA,
+    linewidth = 0
+    ) +
+  ggspatial::layer_spatial(genoscape_projected_clean) +
   geom_sf(data=cluster_geo_sf,
           size = 0.5)+
   theme(
@@ -1062,6 +1096,7 @@ pdf("../figures_output/trends/updated_abd_trend_G3_violin_wide.pdf", width = 8, 
 print(abd_trend)
 dev.off()
 ```
+
 ```{r}
 Eastern <- clean.data %>% filter(ESU=="AU2") %>% select(abd_trend)
 ```
